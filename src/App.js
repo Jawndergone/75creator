@@ -234,7 +234,7 @@ export default function App() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.origin
+        redirectTo: 'https://75creator.vercel.app'
       }
     });
     if (error) setAuthError(error.message);
