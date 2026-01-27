@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { supabase } from './supabaseClient';
 
 const DAILY_TASKS = [
   { id: 1, label: 'Gym' },
@@ -16,6 +17,15 @@ const DAILY_TASKS = [
 const STORAGE_KEY = '75hard-creator-data';
 
 export default function App() {
+  // Auth state
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+
+  // App state
   const [currentDay, setCurrentDay] = useState(1);
   const [completedTasks, setCompletedTasks] = useState([]);
   const [weeklyTask, setWeeklyTask] = useState('');
@@ -23,6 +33,7 @@ export default function App() {
   const [lastCompletedDate, setLastCompletedDate] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showResetWarning, setShowResetWarning] = useState(false);
+  const [showIncompleteWarning, setShowIncompleteWarning] = useState(false);
   const [editingWeekly, setEditingWeekly] = useState(false);
   const [tempWeeklyTask, setTempWeeklyTask] = useState('');
   const [history, setHistory] = useState({});
@@ -31,107 +42,212 @@ export default function App() {
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedHistoryDay, setSelectedHistoryDay] = useState(null);
   const fileInputRef = useRef(null);
+  const midnightCheckRef = useRef(null);
 
   const today = new Date().toDateString();
-  const formattedDate = new Date().toLocaleDateString('en-US', { 
-    month: 'short', 
-    day: 'numeric', 
-    year: 'numeric' 
+  const formattedDate = new Date().toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
   });
 
-  // Load data on mount
+  // Check auth state on mount
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Load data when user logs in
+  useEffect(() => {
+    if (user) {
+      loadUserProgress();
+    } else {
+      setIsLoading(false);
+    }
+  }, [user]);
+
+  // Set up midnight check
+  useEffect(() => {
+    if (!user) return;
+
+    const checkMidnight = () => {
+      const now = new Date();
+      const msUntilMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0) - now;
+
+      midnightCheckRef.current = setTimeout(() => {
+        // It's midnight - check if tasks were completed
+        if (completedTasks.length < 10 && completedTasks.length > 0) {
+          setShowIncompleteWarning(true);
+        }
+        // Set up next midnight check
+        checkMidnight();
+      }, msUntilMidnight);
+    };
+
+    checkMidnight();
+
+    return () => {
+      if (midnightCheckRef.current) {
+        clearTimeout(midnightCheckRef.current);
+      }
+    };
+  }, [user, completedTasks]);
+
+  const loadUserProgress = async () => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        setCurrentDay(parsed.currentDay || 1);
-        setWeeklyTask(parsed.weeklyTask || '');
-        setWeeklyTaskCompleted(parsed.weeklyTaskCompleted || false);
-        setLastCompletedDate(parsed.lastCompletedDate || null);
-        setHistory(parsed.history || {});
-        
-        if (parsed.lastCompletedDate === today) {
-          setCompletedTasks(parsed.completedTasks || []);
-          setTodayPhoto(parsed.todayPhoto || null);
-          setTodayNotes(parsed.todayNotes || '');
-        } else if (parsed.lastCompletedDate) {
-          const lastDate = new Date(parsed.lastCompletedDate);
+      const { data, error } = await supabase
+        .from('user_progress')
+        .select('*')
+        .eq('user_id', user.id)
+        .single();
+
+      if (error && error.code !== 'PGRST116') {
+        console.error('Error loading progress:', error);
+        return;
+      }
+
+      if (data) {
+        setCurrentDay(data.current_day || 1);
+        setWeeklyTask(data.weekly_task || '');
+        setWeeklyTaskCompleted(data.weekly_task_completed || false);
+        setLastCompletedDate(data.last_completed_date || null);
+        setHistory(data.history || {});
+
+        // Check if it's a new day
+        if (data.last_completed_date === today) {
+          setCompletedTasks(data.completed_tasks || []);
+          setTodayPhoto(data.today_photo || null);
+          setTodayNotes(data.today_notes || '');
+        } else if (data.last_completed_date) {
+          const lastDate = new Date(data.last_completed_date);
           const todayDate = new Date(today);
           const diffTime = todayDate - lastDate;
           const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-          
-          if (diffDays > 1 && parsed.completedTasks?.length < 10) {
+
+          // Yesterday wasn't complete - show incomplete warning
+          if (diffDays >= 1 && data.completed_tasks?.length > 0 && data.completed_tasks?.length < 10) {
+            setShowIncompleteWarning(true);
+          }
+          // Missed more than 1 day without completing
+          else if (diffDays > 1 && data.completed_tasks?.length < 10) {
             setShowResetWarning(true);
             setCurrentDay(1);
             setCompletedTasks([]);
             setTodayPhoto(null);
             setTodayNotes('');
             setHistory({});
-          } else if (diffDays === 1 && parsed.completedTasks?.length === 10) {
+          }
+          // Completed yesterday, start fresh today
+          else if (data.completed_tasks?.length === 10) {
             const newHistory = {
-              ...parsed.history,
-              [parsed.currentDay - 1]: {
-                date: parsed.lastCompletedDate,
-                tasks: parsed.completedTasks,
-                photo: parsed.todayPhoto,
-                notes: parsed.todayNotes,
+              ...data.history,
+              [data.current_day]: {
+                date: data.last_completed_date,
+                tasks: data.completed_tasks,
+                photo: data.today_photo,
+                notes: data.today_notes,
               }
             };
             setHistory(newHistory);
             setCompletedTasks([]);
             setTodayPhoto(null);
             setTodayNotes('');
-          } else if (diffDays > 1 && parsed.completedTasks?.length === 10) {
-            const newHistory = {
-              ...parsed.history,
-              [parsed.currentDay - 1]: {
-                date: parsed.lastCompletedDate,
-                tasks: parsed.completedTasks,
-                photo: parsed.todayPhoto,
-                notes: parsed.todayNotes,
-              }
-            };
-            setHistory(newHistory);
-            setCompletedTasks([]);
-            setTodayPhoto(null);
-            setTodayNotes('');
+            if (data.current_day < 75) {
+              setCurrentDay(data.current_day + 1);
+            }
           }
         }
+      } else {
+        // New user - create initial progress record
+        await supabase.from('user_progress').insert({
+          user_id: user.id,
+          current_day: 1,
+          completed_tasks: [],
+          weekly_task: '',
+          weekly_task_completed: false,
+          history: {},
+          today_notes: '',
+        });
       }
     } catch (e) {
-      console.log('No saved data found, starting fresh');
+      console.error('Failed to load progress:', e);
     }
     setIsLoading(false);
-  }, []);
+  };
 
-  // Save data whenever state changes
+  // Save to Supabase whenever state changes
   useEffect(() => {
-    if (isLoading) return;
-    
+    if (isLoading || !user) return;
+
+    const saveProgress = async () => {
+      try {
+        await supabase
+          .from('user_progress')
+          .update({
+            current_day: currentDay,
+            completed_tasks: completedTasks,
+            weekly_task: weeklyTask,
+            weekly_task_completed: weeklyTaskCompleted,
+            last_completed_date: completedTasks.length > 0 ? today : lastCompletedDate,
+            history: history,
+            today_photo: todayPhoto,
+            today_notes: todayNotes,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('user_id', user.id);
+      } catch (e) {
+        console.error('Failed to save:', e);
+      }
+    };
+
+    const debounce = setTimeout(saveProgress, 500);
+    return () => clearTimeout(debounce);
+  }, [currentDay, completedTasks, weeklyTask, weeklyTaskCompleted, history, todayPhoto, todayNotes, isLoading, user, lastCompletedDate, today]);
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        currentDay,
-        completedTasks,
-        weeklyTask,
-        weeklyTaskCompleted,
-        lastCompletedDate: completedTasks.length > 0 ? today : lastCompletedDate,
-        history,
-        todayPhoto,
-        todayNotes,
-      }));
-    } catch (e) {
-      console.error('Failed to save:', e);
+      if (authMode === 'signup') {
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+        setAuthError('Check your email for a confirmation link!');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      }
+    } catch (error) {
+      setAuthError(error.message);
     }
-  }, [currentDay, completedTasks, weeklyTask, weeklyTaskCompleted, history, todayPhoto, todayNotes, isLoading, lastCompletedDate, today]);
+  };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setCurrentDay(1);
+    setCompletedTasks([]);
+    setWeeklyTask('');
+    setWeeklyTaskCompleted(false);
+    setHistory({});
+    setTodayPhoto(null);
+    setTodayNotes('');
+  };
 
   const toggleTask = (taskId) => {
     setCompletedTasks(prev => {
       const isCompleted = prev.includes(taskId);
-      const newTasks = isCompleted 
+      const newTasks = isCompleted
         ? prev.filter(id => id !== taskId)
         : [...prev, taskId];
-      
+
       if (newTasks.length === 10 && !isCompleted) {
         setTimeout(() => {
           setHistory(h => ({
@@ -148,7 +264,7 @@ export default function App() {
           }
         }, 500);
       }
-      
+
       return newTasks;
     });
   };
@@ -187,17 +303,25 @@ export default function App() {
     }
   };
 
-  const resetChallenge = () => {
-    if (window.confirm('Are you sure? This will erase all your progress.')) {
-      setCurrentDay(1);
-      setCompletedTasks([]);
-      setWeeklyTask('');
-      setWeeklyTaskCompleted(false);
-      setShowResetWarning(false);
-      setHistory({});
-      setTodayPhoto(null);
-      setTodayNotes('');
-    }
+  const resetChallenge = async () => {
+    setCurrentDay(1);
+    setCompletedTasks([]);
+    setWeeklyTask('');
+    setWeeklyTaskCompleted(false);
+    setShowResetWarning(false);
+    setShowIncompleteWarning(false);
+    setHistory({});
+    setTodayPhoto(null);
+    setTodayNotes('');
+    setLastCompletedDate(null);
+  };
+
+  const continueAnyway = () => {
+    setShowIncompleteWarning(false);
+    // Reset today's tasks but keep the day count
+    setCompletedTasks([]);
+    setTodayPhoto(null);
+    setTodayNotes('');
   };
 
   const saveWeeklyTask = () => {
@@ -206,7 +330,8 @@ export default function App() {
     setEditingWeekly(false);
   };
 
-  if (isLoading) {
+  // Auth loading screen
+  if (authLoading) {
     return (
       <div style={styles.container}>
         <div style={styles.loading}>Loading...</div>
@@ -214,9 +339,76 @@ export default function App() {
     );
   }
 
+  // Login/Signup screen
+  if (!user) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.authContainer}>
+          <div style={styles.logo}>
+            <span style={styles.logoNumber}>75</span>
+            <div style={styles.logoSpade}>♠</div>
+          </div>
+          <div style={styles.phase}>CREATOR</div>
+
+          <h2 style={styles.authTitle}>
+            {authMode === 'login' ? 'Welcome Back' : 'Create Account'}
+          </h2>
+
+          <form onSubmit={handleAuth} style={styles.authForm}>
+            <input
+              type="email"
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              style={styles.authInput}
+              required
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={styles.authInput}
+              required
+              minLength={6}
+            />
+
+            {authError && (
+              <div style={styles.authError}>{authError}</div>
+            )}
+
+            <button type="submit" style={styles.authButton}>
+              {authMode === 'login' ? 'LOG IN' : 'SIGN UP'}
+            </button>
+          </form>
+
+          <button
+            style={styles.authSwitch}
+            onClick={() => {
+              setAuthMode(authMode === 'login' ? 'signup' : 'login');
+              setAuthError('');
+            }}
+          >
+            {authMode === 'login'
+              ? "Don't have an account? Sign up"
+              : "Already have an account? Log in"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.loading}>Loading your progress...</div>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.container}>
-      {/* Reset Warning Modal */}
+      {/* Reset Warning Modal - Missed a day */}
       {showResetWarning && (
         <div style={styles.modal}>
           <div style={styles.modalContent}>
@@ -230,6 +422,26 @@ export default function App() {
         </div>
       )}
 
+      {/* Incomplete Tasks Warning Modal */}
+      {showIncompleteWarning && (
+        <div style={styles.modal}>
+          <div style={styles.modalContent}>
+            <div style={styles.modalIcon}>😤</div>
+            <h2 style={styles.modalTitle}>You Didn't Finish</h2>
+            <p style={styles.modalText}>
+              You only completed {completedTasks.length}/10 tasks.
+              In 75 Hard, that means starting over. Your call.
+            </p>
+            <button style={styles.modalButton} onClick={resetChallenge}>
+              START OVER
+            </button>
+            <button style={styles.modalButtonSecondary} onClick={continueAnyway}>
+              Continue Anyway
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Calendar Modal */}
       {showCalendar && (
         <div style={styles.modal} onClick={() => setShowCalendar(false)}>
@@ -238,7 +450,7 @@ export default function App() {
               <h2 style={styles.calendarTitle}>PROGRESS</h2>
               <button style={styles.closeButton} onClick={() => setShowCalendar(false)}>✕</button>
             </div>
-            
+
             <div style={styles.calendarGrid}>
               {Array.from({ length: 75 }, (_, i) => {
                 const dayNum = i + 1;
@@ -246,7 +458,7 @@ export default function App() {
                 const isCompleted = dayData?.tasks?.length === 10;
                 const isCurrent = dayNum === currentDay;
                 const isFuture = dayNum > currentDay;
-                
+
                 return (
                   <div
                     key={dayNum}
@@ -268,7 +480,7 @@ export default function App() {
                 );
               })}
             </div>
-            
+
             <div style={styles.calendarLegend}>
               <div style={styles.legendItem}>
                 <div style={{...styles.legendDot, backgroundColor: '#4ade80'}} />
@@ -291,24 +503,24 @@ export default function App() {
               <h2 style={styles.historyTitle}>DAY {selectedHistoryDay}</h2>
               <button style={styles.closeButton} onClick={() => setSelectedHistoryDay(null)}>✕</button>
             </div>
-            
+
             <div style={styles.historyDate}>{history[selectedHistoryDay]?.date}</div>
-            
+
             {history[selectedHistoryDay]?.photo && (
-              <img 
-                src={history[selectedHistoryDay].photo} 
-                alt="Progress" 
+              <img
+                src={history[selectedHistoryDay].photo}
+                alt="Progress"
                 style={styles.historyPhoto}
               />
             )}
-            
+
             {history[selectedHistoryDay]?.notes && (
               <div style={styles.historyNotes}>
                 <div style={styles.historyNotesLabel}>NOTES:</div>
                 <div style={styles.historyNotesText}>{history[selectedHistoryDay].notes}</div>
               </div>
             )}
-            
+
             <div style={styles.historyTasks}>
               {DAILY_TASKS.map(task => {
                 const wasCompleted = history[selectedHistoryDay]?.tasks?.includes(task.id);
@@ -338,12 +550,12 @@ export default function App() {
           </div>
           <div style={styles.phase}>CREATOR</div>
         </div>
-        
+
         <div style={styles.daySection}>
           <div style={styles.dayLabel}>DAY {currentDay}</div>
           <div style={styles.dateLabel}>{formattedDate}</div>
         </div>
-        
+
         <div style={styles.calendarIcon} onClick={() => setShowCalendar(true)}>
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
             <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
@@ -361,7 +573,7 @@ export default function App() {
         {DAILY_TASKS.map((task, index) => {
           const isCompleted = completedTasks.includes(task.id);
           const isPhotoTask = task.id === 1;
-          
+
           return (
             <div key={task.id}>
               <div style={styles.taskRow} onClick={() => toggleTask(task.id)}>
@@ -371,7 +583,7 @@ export default function App() {
                 }}>
                   {isCompleted && <span style={styles.checkmark}>✓</span>}
                 </div>
-                
+
                 <div style={styles.taskContent}>
                   <div style={{
                     ...styles.taskLabel,
@@ -380,9 +592,9 @@ export default function App() {
                     {task.label}
                   </div>
                 </div>
-                
+
                 {isPhotoTask && (
-                  <div 
+                  <div
                     style={styles.cameraIcon}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -402,7 +614,7 @@ export default function App() {
           );
         })}
       </div>
-      
+
       <input
         ref={fileInputRef}
         type="file"
@@ -423,7 +635,7 @@ export default function App() {
       <div style={styles.weeklySection}>
         <div style={styles.weeklyHeader}>
           <div style={styles.sectionLabel}>WEEKLY TASK:</div>
-          <button 
+          <button
             style={styles.editBtn}
             onClick={() => {
               setTempWeeklyTask(weeklyTask);
@@ -433,7 +645,7 @@ export default function App() {
             {weeklyTask ? 'Edit' : '+ Add'}
           </button>
         </div>
-        
+
         {editingWeekly ? (
           <div style={styles.weeklyEdit}>
             <input
@@ -480,9 +692,13 @@ export default function App() {
         />
       </div>
 
-      {/* Reset */}
+      {/* Reset & Sign Out */}
       <button style={styles.resetButton} onClick={resetChallenge}>
         Reset Challenge
+      </button>
+
+      <button style={styles.signOutButton} onClick={handleSignOut}>
+        Sign Out
       </button>
 
       {/* Completion Toast */}
@@ -513,7 +729,64 @@ const styles = {
     fontSize: '16px',
     color: '#666',
   },
-  
+
+  // Auth styles
+  authContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: '80vh',
+    padding: '20px',
+  },
+  authTitle: {
+    fontSize: '24px',
+    fontWeight: '600',
+    marginTop: '30px',
+    marginBottom: '24px',
+  },
+  authForm: {
+    width: '100%',
+    maxWidth: '300px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+  },
+  authInput: {
+    backgroundColor: '#111',
+    border: '1px solid #333',
+    borderRadius: '8px',
+    padding: '14px 16px',
+    color: '#fff',
+    fontSize: '16px',
+    outline: 'none',
+  },
+  authButton: {
+    backgroundColor: '#fff',
+    color: '#000',
+    border: 'none',
+    padding: '14px',
+    borderRadius: '8px',
+    fontSize: '14px',
+    fontWeight: '700',
+    letterSpacing: '1px',
+    cursor: 'pointer',
+    marginTop: '8px',
+  },
+  authSwitch: {
+    background: 'none',
+    border: 'none',
+    color: '#4ade80',
+    fontSize: '14px',
+    marginTop: '20px',
+    cursor: 'pointer',
+  },
+  authError: {
+    color: '#f87171',
+    fontSize: '14px',
+    textAlign: 'center',
+  },
+
   header: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -571,7 +844,7 @@ const styles = {
     cursor: 'pointer',
     padding: '8px',
   },
-  
+
   taskList: {
     marginBottom: '24px',
   },
@@ -633,7 +906,7 @@ const styles = {
     backgroundColor: '#222',
     marginLeft: '44px',
   },
-  
+
   photoPreviewSection: {
     marginBottom: '24px',
   },
@@ -644,7 +917,7 @@ const styles = {
     borderRadius: '8px',
     marginTop: '8px',
   },
-  
+
   weeklySection: {
     marginBottom: '24px',
     paddingTop: '16px',
@@ -718,7 +991,7 @@ const styles = {
     fontWeight: '600',
     cursor: 'pointer',
   },
-  
+
   notesSection: {
     marginBottom: '24px',
   },
@@ -740,7 +1013,7 @@ const styles = {
     lineHeight: '1.5',
     boxSizing: 'border-box',
   },
-  
+
   resetButton: {
     width: '100%',
     background: 'none',
@@ -750,9 +1023,20 @@ const styles = {
     borderRadius: '8px',
     fontSize: '14px',
     cursor: 'pointer',
+    marginBottom: '12px',
+  },
+
+  signOutButton: {
+    width: '100%',
+    background: 'none',
+    border: 'none',
+    color: '#666',
+    padding: '14px',
+    fontSize: '14px',
+    cursor: 'pointer',
     marginBottom: '40px',
   },
-  
+
   toast: {
     position: 'fixed',
     bottom: '40px',
@@ -766,7 +1050,7 @@ const styles = {
     fontSize: '15px',
     zIndex: 100,
   },
-  
+
   modal: {
     position: 'fixed',
     top: 0,
@@ -800,6 +1084,7 @@ const styles = {
     color: '#888',
     marginBottom: '24px',
     fontSize: '15px',
+    lineHeight: '1.5',
   },
   modalButton: {
     backgroundColor: '#fff',
@@ -811,8 +1096,21 @@ const styles = {
     fontWeight: '700',
     letterSpacing: '1px',
     cursor: 'pointer',
+    width: '100%',
+    marginBottom: '12px',
   },
-  
+  modalButtonSecondary: {
+    backgroundColor: 'transparent',
+    color: '#666',
+    border: '1px solid #333',
+    padding: '14px 32px',
+    borderRadius: '8px',
+    fontSize: '14px',
+    fontWeight: '500',
+    cursor: 'pointer',
+    width: '100%',
+  },
+
   calendarModal: {
     backgroundColor: '#111',
     padding: '24px',
@@ -885,7 +1183,7 @@ const styles = {
     borderRadius: '3px',
     boxSizing: 'border-box',
   },
-  
+
   historyModal: {
     backgroundColor: '#111',
     padding: '24px',
