@@ -1,109 +1,231 @@
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
 
-const DAILY_TASKS = [
-  { id: 1, label: 'Gym' },
-  { id: 2, label: 'Post 1 TikTok' },
-  { id: 3, label: 'Send 1 Cold Email/Follow-up' },
-  { id: 4, label: 'Journal for 5 Min' },
-  { id: 5, label: '15 Min Playing with Claude Code' },
-  { id: 6, label: 'Read 10 Pages' },
-  { id: 7, label: '10 Min Walk Outside' },
-  { id: 8, label: 'Reply to 5 YouTube Comments' },
-  { id: 9, label: 'Reply to 5 TikTok Comments' },
-  { id: 10, label: 'One Task Toward Digital Product' },
+const SECTIONS = [
+  { id: 'content', label: '30K Months' },
+  { id: 'health', label: 'Health' },
+  { id: 'personal', label: 'Personal' },
 ];
 
-const STORAGE_KEY = '75hard-creator-data';
+// Ids 1–10 match the first version of the app, so old check-offs carry over.
+const DEFAULT_TASKS = [
+  { id: '2', section: 'content', label: 'Post 1 TikTok' },
+  { id: '3', section: 'content', label: 'Send 1 Cold Email/Follow-up' },
+  { id: '5', section: 'content', label: '15 Min Playing with Claude Code' },
+  { id: '8', section: 'content', label: 'Reply to 5 YouTube Comments' },
+  { id: '9', section: 'content', label: 'Reply to 5 TikTok Comments' },
+  { id: '10', section: 'content', label: 'One Task Toward Digital Product' },
+  { id: '1', section: 'health', label: '45 Minute Workout' },
+  { id: '7', section: 'health', label: '10K Steps' },
+  { id: '11', section: 'health', label: 'Drink a Gallon of Water' },
+  { id: '12', section: 'health', label: 'No Junk Food' },
+  { id: '4', section: 'personal', label: 'Journal for 5 Min' },
+  { id: '6', section: 'personal', label: 'Read 10 Pages' },
+  { id: '13', section: 'personal', label: 'Smile at a Stranger' },
+  { id: '14', section: 'personal', label: 'Give a Compliment' },
+];
+const OLD_TASK_IDS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
+
+const sectionOf = (task, sections) =>
+  sections.some((s) => s.id === task.section) ? task.section : sections[0].id;
+
+// ---- dates (local calendar days as YYYY-MM-DD) ----
+const pad = (n) => String(n).padStart(2, '0');
+const fmt = (d) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+const parse = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (s, n) => { const d = parse(s); d.setDate(d.getDate() + n); return fmt(d); };
+const diffDays = (a, b) => {
+  const x = parse(a), y = parse(b);
+  return Math.round((Date.UTC(y.getFullYear(), y.getMonth(), y.getDate()) - Date.UTC(x.getFullYear(), x.getMonth(), x.getDate())) / 864e5);
+};
+const todayStr = () => fmt(new Date());
+const pretty = (s) => parse(s).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+const uid = () => Math.random().toString(36).slice(2, 9);
+// Weeks run Monday to Sunday.
+const weekStart = (s) => addDays(s, -((parse(s).getDay() + 6) % 7));
+
+// ---- challenge logic ----
+const endDate = (c) => addDays(c.start, c.length - 1);
+const dayOf = (c, date) => diffDays(c.start, date) + 1;
+// Tasks remember when they were added or removed, so changing the routine never rewrites past days.
+const activeTasks = (c, date) =>
+  c.tasks.filter((t) => (!t.added || t.added <= date) && (!t.removed || date < t.removed));
+const doneCount = (data, date) => {
+  const log = data.logs[date];
+  if (!log) return 0;
+  return activeTasks(data.challenge, date).filter((t) => log.done.includes(t.id)).length;
+};
+const isComplete = (data, date) => {
+  const n = activeTasks(data.challenge, date).length;
+  return n > 0 && doneCount(data, date) === n;
+};
+
+function cellState(data, date, t) {
+  if (date > t) return 'future';
+  if (isComplete(data, date)) return 'done';
+  return date === t ? 'open' : 'missed';
+}
+
+// Days already over, from Day 1 up to yesterday (or the last day of the challenge).
+function pastDays(data, t) {
+  const c = data.challenge;
+  const last = [addDays(t, -1), endDate(c)].sort()[0];
+  const out = [];
+  for (let d = c.start; d <= last; d = addDays(d, 1)) out.push(d);
+  return out;
+}
+
+// First day that broke the rules.
+function findFailure(data, t) {
+  const c = data.challenge;
+  let misses = 0;
+  for (const d of pastDays(data, t)) {
+    if (!isComplete(data, d)) {
+      misses++;
+      if (c.rule === 'strict' || misses > c.grace) return { date: d, day: dayOf(c, d), misses };
+    }
+  }
+  return null;
+}
+const missesSoFar = (data, t) => pastDays(data, t).filter((d) => !isComplete(data, d)).length;
+
+function streak(data, t) {
+  let d = isComplete(data, t) ? t : addDays(t, -1);
+  let n = 0;
+  while (d >= data.challenge.start && isComplete(data, d)) { n++; d = addDays(d, -1); }
+  return n;
+}
+function daysDone(data, t) {
+  const c = data.challenge;
+  let n = 0;
+  for (let i = 0; i < c.length; i++) {
+    const d = addDays(c.start, i);
+    if (d <= t && isComplete(data, d)) n++;
+  }
+  return n;
+}
+
+function freshData(start) {
+  return {
+    version: 2,
+    challenge: { name: '75 Creator', length: 75, rule: 'strict', grace: 2, sections: SECTIONS, tasks: DEFAULT_TASKS, start },
+    logs: {},
+    attempts: [],
+    weeks: {},
+  };
+}
+
+// Converts a row saved by the first version of the app (day-numbered history) into dated logs.
+function migrateOldRow(row) {
+  const t = todayStr();
+  const data = freshData(t);
+  // Tasks that didn't exist before start counting today, so past days stay complete.
+  data.challenge.tasks = DEFAULT_TASKS.map((x) => (OLD_TASK_IDS.includes(x.id) ? x : { ...x, added: t }));
+  const toDay = (s) => { const d = new Date(s); return isNaN(d) ? null : fmt(d); };
+  let start = null;
+
+  Object.entries(row.history || {}).forEach(([dayNum, h]) => {
+    const date = h && toDay(h.date);
+    if (!date) return;
+    data.logs[date] = { done: (h.tasks || []).map(String), note: h.notes || '' };
+    if (h.photo) data.logs[date].photo = h.photo;
+    const s = addDays(date, -(Number(dayNum) - 1));
+    if (!start || s < start) start = s;
+  });
+
+  const last = row.last_completed_date && toDay(row.last_completed_date);
+  if (last && (row.completed_tasks || []).length) {
+    data.logs[last] = {
+      ...(data.logs[last] || {}),
+      done: row.completed_tasks.map(String),
+      note: row.today_notes || (data.logs[last] && data.logs[last].note) || '',
+    };
+    if (row.today_photo) data.logs[last].photo = row.today_photo;
+  }
+
+  data.challenge.start = start || addDays(t, -((row.current_day || 1) - 1));
+  if (row.weekly_task) data.weeks[weekStart(t)] = { label: row.weekly_task, done: !!row.weekly_task_completed };
+  return data;
+}
+
+const CheckIcon = () => (
+  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="M3 8.5l3.2 3L13 4.5" stroke="var(--accent-ink)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+function CheckRow({ label, checked, onToggle }) {
+  return (
+    <button type="button" className="task" aria-pressed={checked} onClick={onToggle}>
+      <span className="box"><CheckIcon /></span>
+      <span className="label">{label}</span>
+    </button>
+  );
+}
+
+const Logo = () => (
+  <div className="logo" aria-label="75 Creator">
+    <div className="logo-mark" aria-hidden="true">75<span>♠</span></div>
+    <div className="logo-word" aria-hidden="true">CREATOR</div>
+  </div>
+);
 
 export default function App() {
   // Auth state
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
+  const [authMode, setAuthMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
 
   // App state
-  const [currentDay, setCurrentDay] = useState(1);
-  const [completedTasks, setCompletedTasks] = useState([]);
-  const [weeklyTask, setWeeklyTask] = useState('');
-  const [weeklyTaskCompleted, setWeeklyTaskCompleted] = useState(false);
-  const [lastCompletedDate, setLastCompletedDate] = useState(null);
+  const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [showResetWarning, setShowResetWarning] = useState(false);
-  const [showIncompleteWarning, setShowIncompleteWarning] = useState(false);
-  const [editingWeekly, setEditingWeekly] = useState(false);
-  const [tempWeeklyTask, setTempWeeklyTask] = useState('');
-  const [history, setHistory] = useState({});
-  const [todayPhoto, setTodayPhoto] = useState(null);
-  const [todayNotes, setTodayNotes] = useState('');
-  const [showCalendar, setShowCalendar] = useState(false);
-  const [selectedHistoryDay, setSelectedHistoryDay] = useState(null);
-  const fileInputRef = useRef(null);
-  const midnightCheckRef = useRef(null);
+  const [saveStatus, setSaveStatus] = useState('saved');
+  const [today, setToday] = useState(todayStr());
+  const [selected, setSelected] = useState(todayStr());
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [editingTasks, setEditingTasks] = useState(false);
+  const [weeklyEditing, setWeeklyEditing] = useState(false);
+  const [weeklyDraft, setWeeklyDraft] = useState('');
+  const [photoError, setPhotoError] = useState('');
+  const loadedRef = useRef(false);
+  const checklistRef = useRef(null);
 
-  const today = new Date().toDateString();
-  const formattedDate = new Date().toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric'
-  });
-
-  // Check auth state on mount
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
       setAuthLoading(false);
     });
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
     });
-
     return () => subscription.unsubscribe();
   }, []);
 
-  // Load data when user logs in
   useEffect(() => {
-    if (user) {
-      loadUserProgress();
-    } else {
-      setIsLoading(false);
-    }
+    if (user) loadUserProgress();
+    else { setIsLoading(false); loadedRef.current = false; setData(null); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
-  // Set up midnight check
+  // Roll over to the new day if the app stays open past midnight.
   useEffect(() => {
-    if (!user) return;
-
-    const checkMidnight = () => {
-      const now = new Date();
-      const msUntilMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0) - now;
-
-      midnightCheckRef.current = setTimeout(() => {
-        // It's midnight - check if tasks were completed
-        if (completedTasks.length < 10 && completedTasks.length > 0) {
-          setShowIncompleteWarning(true);
-        }
-        // Set up next midnight check
-        checkMidnight();
-      }, msUntilMidnight);
-    };
-
-    checkMidnight();
-
-    return () => {
-      if (midnightCheckRef.current) {
-        clearTimeout(midnightCheckRef.current);
-      }
-    };
-  }, [user, completedTasks]);
+    const id = setInterval(() => {
+      const t = todayStr();
+      setToday((prev) => {
+        if (prev !== t) setSelected((s) => (s === prev ? t : s));
+        return t;
+      });
+    }, 30000);
+    return () => clearInterval(id);
+  }, []);
 
   const loadUserProgress = async () => {
+    setIsLoading(true);
     try {
-      const { data, error } = await supabase
+      const { data: row, error } = await supabase
         .from('user_progress')
         .select('*')
         .eq('user_id', user.id)
@@ -111,116 +233,76 @@ export default function App() {
 
       if (error && error.code !== 'PGRST116') {
         console.error('Error loading progress:', error);
+        setSaveStatus('error');
+        setIsLoading(false);
         return;
       }
 
-      if (data) {
-        setCurrentDay(data.current_day || 1);
-        setWeeklyTask(data.weekly_task || '');
-        setWeeklyTaskCompleted(data.weekly_task_completed || false);
-        setLastCompletedDate(data.last_completed_date || null);
-        setHistory(data.history || {});
-
-        // Check if it's a new day
-        if (data.last_completed_date === today) {
-          setCompletedTasks(data.completed_tasks || []);
-          setTodayPhoto(data.today_photo || null);
-          setTodayNotes(data.today_notes || '');
-        } else if (data.last_completed_date) {
-          const lastDate = new Date(data.last_completed_date);
-          const todayDate = new Date(today);
-          const diffTime = todayDate - lastDate;
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-          // Yesterday wasn't complete - show incomplete warning
-          if (diffDays >= 1 && data.completed_tasks?.length > 0 && data.completed_tasks?.length < 10) {
-            setShowIncompleteWarning(true);
-          }
-          // Missed more than 1 day without completing
-          else if (diffDays > 1 && data.completed_tasks?.length < 10) {
-            setShowResetWarning(true);
-            setCurrentDay(1);
-            setCompletedTasks([]);
-            setTodayPhoto(null);
-            setTodayNotes('');
-            setHistory({});
-          }
-          // Completed yesterday, start fresh today
-          else if (data.completed_tasks?.length === 10) {
-            const newHistory = {
-              ...data.history,
-              [data.current_day]: {
-                date: data.last_completed_date,
-                tasks: data.completed_tasks,
-                photo: data.today_photo,
-                notes: data.today_notes,
-              }
-            };
-            setHistory(newHistory);
-            setCompletedTasks([]);
-            setTodayPhoto(null);
-            setTodayNotes('');
-            if (data.current_day < 75) {
-              setCurrentDay(data.current_day + 1);
-            }
-          }
-        }
-      } else {
-        // New user - create initial progress record
+      let next;
+      if (!row) {
+        next = freshData(todayStr());
         await supabase.from('user_progress').insert({
           user_id: user.id,
           current_day: 1,
           completed_tasks: [],
-          weekly_task: '',
-          weekly_task_completed: false,
-          history: {},
+          history: { v2: next },
           today_notes: '',
         });
+      } else if (row.history && row.history.v2) {
+        next = row.history.v2;
+        if (!next.weeks) next.weeks = {};
+        if (!next.attempts) next.attempts = [];
+        if (!next.challenge.sections) next.challenge.sections = SECTIONS;
+      } else {
+        // First open after the update: keep a copy of the old history next to the new data.
+        next = migrateOldRow(row);
+        await supabase
+          .from('user_progress')
+          .update({ history: { v2: next, v1: row.history || {} }, updated_at: new Date().toISOString() })
+          .eq('user_id', user.id);
       }
+      setData(next);
+      loadedRef.current = true;
     } catch (e) {
       console.error('Failed to load progress:', e);
+      setSaveStatus('error');
     }
     setIsLoading(false);
   };
 
-  // Save to Supabase whenever state changes
+  // Save to Supabase whenever data changes.
   useEffect(() => {
-    if (isLoading || !user) return;
-
-    const saveProgress = async () => {
+    if (!user || !data || !loadedRef.current) return;
+    setSaveStatus('saving');
+    const timer = setTimeout(async () => {
       try {
-        await supabase
+        const { data: row } = await supabase.from('user_progress').select('history').eq('user_id', user.id).single();
+        const keep = row && row.history && row.history.v1 ? { v1: row.history.v1 } : {};
+        const { error } = await supabase
           .from('user_progress')
           .update({
-            current_day: currentDay,
-            completed_tasks: completedTasks,
-            weekly_task: weeklyTask,
-            weekly_task_completed: weeklyTaskCompleted,
-            last_completed_date: completedTasks.length > 0 ? today : lastCompletedDate,
-            history: history,
-            today_photo: todayPhoto,
-            today_notes: todayNotes,
+            history: { ...keep, v2: data },
+            current_day: Math.max(1, Math.min(dayOf(data.challenge, todayStr()), data.challenge.length)),
             updated_at: new Date().toISOString(),
           })
           .eq('user_id', user.id);
+        setSaveStatus(error ? 'error' : 'saved');
       } catch (e) {
         console.error('Failed to save:', e);
+        setSaveStatus('error');
       }
-    };
-
-    const debounce = setTimeout(saveProgress, 500);
-    return () => clearTimeout(debounce);
-  }, [currentDay, completedTasks, weeklyTask, weeklyTaskCompleted, history, todayPhoto, todayNotes, isLoading, user, lastCompletedDate, today]);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [data, user]);
 
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthError('');
-
     try {
       if (authMode === 'signup') {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
-        setAuthError('Check your email for a confirmation link!');
+        setAuthError('Check your email for a confirmation link.');
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
@@ -233,1094 +315,756 @@ export default function App() {
   const handleGoogleSignIn = async () => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: {
-        redirectTo: 'https://75creator.vercel.app'
-      }
+      options: { redirectTo: 'https://75creator.vercel.app' },
     });
     if (error) setAuthError(error.message);
   };
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
-    setCurrentDay(1);
-    setCompletedTasks([]);
-    setWeeklyTask('');
-    setWeeklyTaskCompleted(false);
-    setHistory({});
-    setTodayPhoto(null);
-    setTodayNotes('');
   };
 
-  const toggleTask = (taskId) => {
-    setCompletedTasks(prev => {
-      const isCompleted = prev.includes(taskId);
-      const newTasks = isCompleted
-        ? prev.filter(id => id !== taskId)
-        : [...prev, taskId];
-
-      if (newTasks.length === 10 && !isCompleted) {
-        setTimeout(() => {
-          setHistory(h => ({
-            ...h,
-            [currentDay]: {
-              date: today,
-              tasks: newTasks,
-              photo: todayPhoto,
-              notes: todayNotes,
-            }
-          }));
-          if (currentDay < 75) {
-            setCurrentDay(d => d + 1);
-          }
-        }, 500);
-      }
-
-      return newTasks;
-    });
-  };
-
-  const handlePhotoUpload = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setTodayPhoto(reader.result);
-        if (history[currentDay]) {
-          setHistory(h => ({
-            ...h,
-            [currentDay]: {
-              ...h[currentDay],
-              photo: reader.result,
-            }
-          }));
-        }
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleNotesChange = (e) => {
-    const newNotes = e.target.value;
-    setTodayNotes(newNotes);
-    if (history[currentDay]) {
-      setHistory(h => ({
-        ...h,
-        [currentDay]: {
-          ...h[currentDay],
-          notes: newNotes,
-        }
-      }));
-    }
-  };
-
-  const resetChallenge = async () => {
-    setCurrentDay(1);
-    setCompletedTasks([]);
-    setWeeklyTask('');
-    setWeeklyTaskCompleted(false);
-    setShowResetWarning(false);
-    setShowIncompleteWarning(false);
-    setHistory({});
-    setTodayPhoto(null);
-    setTodayNotes('');
-    setLastCompletedDate(null);
-  };
-
-  const continueAnyway = () => {
-    setShowIncompleteWarning(false);
-    // Reset today's tasks but keep the day count
-    setCompletedTasks([]);
-    setTodayPhoto(null);
-    setTodayNotes('');
-  };
-
-  const saveWeeklyTask = () => {
-    setWeeklyTask(tempWeeklyTask);
-    setWeeklyTaskCompleted(false);
-    setEditingWeekly(false);
-  };
-
-  // Auth loading screen
-  if (authLoading) {
+  // ---- screens before the app ----
+  if (authLoading || (user && isLoading)) {
     return (
-      <div style={styles.container}>
-        <div style={styles.loading}>Loading...</div>
+      <div className="app">
+        <style>{CSS}</style>
+        <div className="loading">{authLoading ? 'Loading…' : 'Loading your progress…'}</div>
       </div>
     );
   }
 
-  // Login/Signup screen
   if (!user) {
     return (
-      <div style={styles.container}>
-        <div style={styles.authContainer}>
-          <div style={styles.logo}>
-            <span style={styles.logoNumber}>75</span>
-            <div style={styles.logoSpade}>♠</div>
-          </div>
-          <div style={styles.phase}>CREATOR</div>
-
-          <h2 style={styles.authTitle}>
-            {authMode === 'login' ? 'Welcome Back' : 'Create Account'}
-          </h2>
-
-          <form onSubmit={handleAuth} style={styles.authForm}>
-            <input
-              type="email"
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={styles.authInput}
-              required
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={styles.authInput}
-              required
-              minLength={6}
-            />
-
-            {authError && (
-              <div style={styles.authError}>{authError}</div>
-            )}
-
-            <button type="submit" style={styles.authButton}>
-              {authMode === 'login' ? 'LOG IN' : 'SIGN UP'}
-            </button>
+      <div className="app">
+        <style>{CSS}</style>
+        <div className="auth card">
+          <Logo />
+          <h2>{authMode === 'login' ? 'Welcome back' : 'Create your account'}</h2>
+          <form onSubmit={handleAuth} className="auth-form">
+            <input className="text" id="authEmail" type="email" placeholder="Email" value={email}
+              onChange={(e) => setEmail(e.target.value)} required />
+            <input className="text" id="authPassword" type="password" placeholder="Password" value={password}
+              onChange={(e) => setPassword(e.target.value)} required minLength={6} />
+            {authError && <p className="err">{authError}</p>}
+            <button type="submit" className="btn primary wide">{authMode === 'login' ? 'Log in' : 'Sign up'}</button>
           </form>
-
-          <div style={styles.dividerContainer}>
-            <div style={styles.dividerLine} />
-            <span style={styles.dividerText}>or</span>
-            <div style={styles.dividerLine} />
-          </div>
-
-          <button style={styles.googleButton} onClick={handleGoogleSignIn}>
-            <svg width="18" height="18" viewBox="0 0 24 24">
-              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-            </svg>
-            Continue with Google
-          </button>
-
-          <button
-            style={styles.authSwitch}
-            onClick={() => {
-              setAuthMode(authMode === 'login' ? 'signup' : 'login');
-              setAuthError('');
-            }}
-          >
-            {authMode === 'login'
-              ? "Don't have an account? Sign up"
-              : "Already have an account? Log in"}
+          <div className="or"><span>or</span></div>
+          <button type="button" className="btn wide" onClick={handleGoogleSignIn}>Continue with Google</button>
+          <button type="button" className="link" onClick={() => { setAuthMode(authMode === 'login' ? 'signup' : 'login'); setAuthError(''); }}>
+            {authMode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Log in'}
           </button>
         </div>
       </div>
     );
   }
 
-  if (isLoading) {
+  if (!data) {
     return (
-      <div style={styles.container}>
-        <div style={styles.loading}>Loading your progress...</div>
+      <div className="app">
+        <style>{CSS}</style>
+        <div className="loading">
+          <p>Your progress couldn't be loaded. Check your connection and try again.</p>
+          <button type="button" className="btn" onClick={loadUserProgress}>Try again</button>
+        </div>
       </div>
     );
   }
+
+  // ---- derived values ----
+  const c = data.challenge;
+  const t = today;
+  const end = endDate(c);
+  let sel = selected;
+  if (sel < c.start || sel > t) sel = t > end ? end : t;
+  if (sel < c.start) sel = c.start;
+
+  const fail = findFailure(data, t);
+  const finished = !fail && (t > end || (t === end && isComplete(data, end)));
+  const day = t < c.start ? 0 : Math.min(Math.max(dayOf(c, t), 1), c.length);
+  const done = daysDone(data, t);
+  const log = data.logs[sel] || { done: [], note: '' };
+  const isToday = sel === t;
+  const selTasks = activeTasks(c, sel);
+  const sections = c.sections || SECTIONS;
+  const wk = weekStart(sel);
+  const weekly = data.weeks[wk];
+  const cols = c.length % 15 === 0 || c.length > 60 ? 15 : 10;
+
+  // ---- updates ----
+  const updateLog = (date, fn) => setData((prev) => {
+    const cur = prev.logs[date] || { done: [], note: '' };
+    return { ...prev, logs: { ...prev.logs, [date]: fn({ ...cur, done: [...cur.done] }) } };
+  });
+
+  const toggleTask = (id) => updateLog(sel, (l) => {
+    const i = l.done.indexOf(id);
+    if (i >= 0) l.done.splice(i, 1); else l.done.push(id);
+    return l;
+  });
+
+  const selectDay = (date) => {
+    setSelected(date);
+    setPhotoError('');
+    setWeeklyEditing(false);
+    if (checklistRef.current) checklistRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const restart = () => {
+    if (!fail) return;
+    setData((prev) => ({
+      ...prev,
+      attempts: [...prev.attempts, { start: prev.challenge.start, end: fail.date, reached: Math.max(fail.day - 1, 0), length: prev.challenge.length }],
+      challenge: { ...prev.challenge, start: t },
+    }));
+    setSelected(t);
+  };
+
+  // Photos are shrunk before saving so they don't slow down syncing.
+  const handlePhoto = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const max = 640;
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.width * scale);
+      cv.height = Math.round(img.height * scale);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      URL.revokeObjectURL(url);
+      const photo = cv.toDataURL('image/jpeg', 0.7);
+      setPhotoError('');
+      updateLog(sel, (l) => ({ ...l, photo }));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      setPhotoError("That file couldn't be opened as an image. Try a JPG or PNG.");
+    };
+    img.src = url;
+  };
+
+  const saveWeekly = () => {
+    const label = weeklyDraft.trim();
+    setData((prev) => {
+      const weeks = { ...prev.weeks };
+      if (label) weeks[wk] = { label, done: weeks[wk] && weeks[wk].label === label ? weeks[wk].done : false };
+      else delete weeks[wk];
+      return { ...prev, weeks };
+    });
+    setWeeklyEditing(false);
+  };
 
   return (
-    <div style={styles.container}>
-      {/* Reset Warning Modal - Missed a day */}
-      {showResetWarning && (
-        <div style={styles.modal}>
-          <div style={styles.modalContent}>
-            <div style={styles.modalIcon}>⚠</div>
-            <h2 style={styles.modalTitle}>You Missed a Day</h2>
-            <p style={styles.modalText}>Back to Day 1. No excuses. Let's go.</p>
-            <button style={styles.modalButton} onClick={() => setShowResetWarning(false)}>
-              START OVER
-            </button>
+    <div className="app">
+      <style>{CSS}</style>
+      <div className="wrap">
+        <header>
+          <div>
+            <Logo />
+            {c.name !== '75 Creator' && <h1 className="challenge-name">{c.name}</h1>}
           </div>
-        </div>
-      )}
+          <button className="btn" type="button" onClick={() => setSetupOpen(true)}>Edit challenge</button>
+        </header>
 
-      {/* Incomplete Tasks Warning Modal */}
-      {showIncompleteWarning && (
-        <div style={styles.modal}>
-          <div style={styles.modalContent}>
-            <div style={styles.modalIcon}>😤</div>
-            <h2 style={styles.modalTitle}>You Didn't Finish</h2>
-            <p style={styles.modalText}>
-              You only completed {completedTasks.length}/10 tasks.
-              In 75 Hard, that means starting over. Your call.
+        {fail && (
+          <div className="banner fail">
+            <p>
+              <strong>Day {fail.day} ({pretty(fail.date)}) wasn't completed.</strong>{' '}
+              {c.rule === 'strict'
+                ? 'Under hard rules, that means starting over at Day 1.'
+                : `That's ${fail.misses} missed days, more than your ${c.grace} grace days.`}{' '}
+              If you did everything and just forgot to check it off, log it now.
             </p>
-            <button style={styles.modalButton} onClick={resetChallenge}>
-              START OVER
-            </button>
-            <button style={styles.modalButtonSecondary} onClick={continueAnyway}>
-              Continue Anyway
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Calendar Modal */}
-      {showCalendar && (
-        <div style={styles.modal} onClick={() => setShowCalendar(false)}>
-          <div style={styles.calendarModal} onClick={e => e.stopPropagation()}>
-            <div style={styles.calendarHeader}>
-              <h2 style={styles.calendarTitle}>PROGRESS</h2>
-              <button style={styles.closeButton} onClick={() => setShowCalendar(false)}>✕</button>
-            </div>
-
-            <div style={styles.calendarGrid}>
-              {Array.from({ length: 75 }, (_, i) => {
-                const dayNum = i + 1;
-                const dayData = history[dayNum];
-                const isCompleted = dayData?.tasks?.length === 10;
-                const isCurrent = dayNum === currentDay;
-                const isFuture = dayNum > currentDay;
-
-                return (
-                  <div
-                    key={dayNum}
-                    style={{
-                      ...styles.calendarDay,
-                      ...(isCompleted ? styles.calendarDayCompleted : {}),
-                      ...(isCurrent ? styles.calendarDayCurrent : {}),
-                      ...(isFuture ? styles.calendarDayFuture : {}),
-                    }}
-                    onClick={() => {
-                      if (dayData) {
-                        setSelectedHistoryDay(dayNum);
-                        setShowCalendar(false);
-                      }
-                    }}
-                  >
-                    {dayNum}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div style={styles.calendarLegend}>
-              <div style={styles.legendItem}>
-                <div style={{...styles.legendDot, backgroundColor: '#4ade80'}} />
-                <span>Complete</span>
-              </div>
-              <div style={styles.legendItem}>
-                <div style={{...styles.legendDot, border: '2px solid #fff'}} />
-                <span>Today</span>
-              </div>
+            <div className="row">
+              <button className="btn primary" type="button" onClick={restart}>Restart at Day 1</button>
+              <button className="btn" type="button" onClick={() => selectDay(fail.date)}>I did it, let me log it</button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* History Day Modal */}
-      {selectedHistoryDay && (
-        <div style={styles.modal} onClick={() => setSelectedHistoryDay(null)}>
-          <div style={styles.historyModal} onClick={e => e.stopPropagation()}>
-            <div style={styles.historyHeader}>
-              <h2 style={styles.historyTitle}>DAY {selectedHistoryDay}</h2>
-              <button style={styles.closeButton} onClick={() => setSelectedHistoryDay(null)}>✕</button>
-            </div>
-
-            <div style={styles.historyDate}>{history[selectedHistoryDay]?.date}</div>
-
-            {history[selectedHistoryDay]?.photo && (
-              <img
-                src={history[selectedHistoryDay].photo}
-                alt="Progress"
-                style={styles.historyPhoto}
-              />
-            )}
-
-            {history[selectedHistoryDay]?.notes && (
-              <div style={styles.historyNotes}>
-                <div style={styles.historyNotesLabel}>NOTES:</div>
-                <div style={styles.historyNotesText}>{history[selectedHistoryDay].notes}</div>
-              </div>
-            )}
-
-            <div style={styles.historyTasks}>
-              {DAILY_TASKS.map(task => {
-                const wasCompleted = history[selectedHistoryDay]?.tasks?.includes(task.id);
-                return (
-                  <div key={task.id} style={styles.historyTaskRow}>
-                    <div style={{
-                      ...styles.historyCheck,
-                      ...(wasCompleted ? styles.historyCheckDone : {}),
-                    }}>
-                      {wasCompleted && '✓'}
-                    </div>
-                    <span style={styles.historyTaskText}>{task.label}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Header */}
-      <div style={styles.header}>
-        <div style={styles.logoSection}>
-          <div style={styles.logo}>
-            <span style={styles.logoNumber}>75</span>
-            <div style={styles.logoSpade}>♠</div>
-          </div>
-          <div style={styles.phase}>CREATOR</div>
-        </div>
-
-        <div style={styles.daySection}>
-          <div style={styles.dayLabel}>DAY {currentDay}</div>
-          <div style={styles.dateLabel}>{formattedDate}</div>
-        </div>
-
-        <div style={styles.calendarIcon} onClick={() => setShowCalendar(true)}>
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
-            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
-            <line x1="16" y1="2" x2="16" y2="6"></line>
-            <line x1="8" y1="2" x2="8" y2="6"></line>
-            <line x1="3" y1="10" x2="21" y2="10"></line>
-            <rect x="7" y="14" width="3" height="3" fill="white"></rect>
-            <rect x="14" y="14" width="3" height="3" fill="white"></rect>
-          </svg>
-        </div>
-      </div>
-
-      {/* Task List */}
-      <div style={styles.taskList}>
-        {DAILY_TASKS.map((task, index) => {
-          const isCompleted = completedTasks.includes(task.id);
-          const isPhotoTask = task.id === 1;
-
-          return (
-            <div key={task.id}>
-              <div style={styles.taskRow} onClick={() => toggleTask(task.id)}>
-                <div style={{
-                  ...styles.checkbox,
-                  ...(isCompleted ? styles.checkboxChecked : {}),
-                }}>
-                  {isCompleted && <span style={styles.checkmark}>✓</span>}
-                </div>
-
-                <div style={styles.taskContent}>
-                  <div style={{
-                    ...styles.taskLabel,
-                    ...(isCompleted ? styles.taskLabelDone : {}),
-                  }}>
-                    {task.label}
-                  </div>
-                </div>
-
-                {isPhotoTask && (
-                  <div
-                    style={styles.cameraIcon}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      fileInputRef.current.click();
-                    }}
-                  >
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
-                      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                      <circle cx="12" cy="13" r="4"></circle>
-                    </svg>
-                    {todayPhoto && <div style={styles.photoDot} />}
-                  </div>
-                )}
-              </div>
-              {index < DAILY_TASKS.length - 1 && <div style={styles.divider} />}
-            </div>
-          );
-        })}
-      </div>
-
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        onChange={handlePhotoUpload}
-        style={{ display: 'none' }}
-      />
-
-      {/* Photo Preview */}
-      {todayPhoto && (
-        <div style={styles.photoPreviewSection}>
-          <div style={styles.sectionLabel}>TODAY'S PHOTO:</div>
-          <img src={todayPhoto} alt="Today's progress" style={styles.photoPreview} />
-        </div>
-      )}
-
-      {/* Weekly Task */}
-      <div style={styles.weeklySection}>
-        <div style={styles.weeklyHeader}>
-          <div style={styles.sectionLabel}>WEEKLY TASK:</div>
-          <button
-            style={styles.editBtn}
-            onClick={() => {
-              setTempWeeklyTask(weeklyTask);
-              setEditingWeekly(true);
-            }}
-          >
-            {weeklyTask ? 'Edit' : '+ Add'}
-          </button>
-        </div>
-
-        {editingWeekly ? (
-          <div style={styles.weeklyEdit}>
-            <input
-              type="text"
-              value={tempWeeklyTask}
-              onChange={(e) => setTempWeeklyTask(e.target.value)}
-              placeholder="e.g., Call with CEO on Tuesday"
-              style={styles.weeklyInput}
-              autoFocus
-            />
-            <div style={styles.weeklyBtns}>
-              <button style={styles.cancelBtn} onClick={() => setEditingWeekly(false)}>Cancel</button>
-              <button style={styles.saveBtn} onClick={saveWeeklyTask}>Save</button>
-            </div>
-          </div>
-        ) : weeklyTask ? (
-          <div style={styles.weeklyTaskRow} onClick={() => setWeeklyTaskCompleted(!weeklyTaskCompleted)}>
-            <div style={{
-              ...styles.checkbox,
-              ...(weeklyTaskCompleted ? styles.checkboxChecked : {}),
-            }}>
-              {weeklyTaskCompleted && <span style={styles.checkmark}>✓</span>}
-            </div>
-            <span style={{
-              ...styles.taskLabel,
-              ...(weeklyTaskCompleted ? styles.taskLabelDone : {}),
-            }}>{weeklyTask}</span>
-          </div>
-        ) : (
-          <div style={styles.weeklyPlaceholder}>No weekly task set</div>
         )}
+
+        {finished && (
+          <section className="card finished">
+            <div className="eyebrow">Challenge complete</div>
+            <h2>All {c.length} days done</h2>
+            <p>{c.name} ran from {pretty(c.start)} to {pretty(end)}. Start a new challenge from Edit challenge.</p>
+          </section>
+        )}
+
+        <section className="card score" aria-label="Progress">
+          <div className="score-top">
+            <div>
+              <div className="eyebrow">{t < c.start ? 'Starts ' + pretty(c.start) : 'Day'}</div>
+              <div className="daynum">{day}<small>/{c.length}</small></div>
+            </div>
+            <div className="stats">
+              <div className="stat"><span className="eyebrow">Streak</span><b>{streak(data, t)}</b></div>
+              <div className="stat"><span className="eyebrow">Days done</span><b>{done}</b></div>
+              <div className="stat"><span className="eyebrow">Restarts</span><b>{data.attempts.length}</b></div>
+            </div>
+          </div>
+          <div className="rail" aria-hidden="true"><i style={{ width: (100 * done / c.length).toFixed(1) + '%' }} /></div>
+          <p className="rule">
+            {c.rule === 'strict'
+              ? 'Hard rules: miss a day and you restart at Day 1.'
+              : `Grace days: ${Math.min(missesSoFar(data, t), c.grace)} of ${c.grace} used. Miss more and you restart.`}
+          </p>
+        </section>
+
+        <section className="card today" aria-label="Checklist" ref={checklistRef}>
+          <div className="today-head">
+            <div>
+              <div className="eyebrow">
+                {isToday ? `Day ${dayOf(c, sel)} · ${pretty(sel)}` : `${pretty(sel)} · editing a past day`}
+              </div>
+              <h2>{isToday ? 'Today' : `Day ${dayOf(c, sel)}`}</h2>
+            </div>
+            <div className="head-right">
+              {!editingTasks && <span className="count">{doneCount(data, sel)} / {selTasks.length} done</span>}
+              <button className="btn" type="button" onClick={() => { setEditingTasks(!editingTasks); setSelected(t); }}>
+                {editingTasks ? 'Done' : 'Edit tasks'}
+              </button>
+            </div>
+          </div>
+          {editingTasks ? (
+            <TaskEditor
+              tasks={c.tasks}
+              sections={sections}
+              today={t}
+              onChange={(changes) => setData((prev) => ({ ...prev, challenge: { ...prev.challenge, ...changes } }))}
+            />
+          ) : (
+            sections.map((s) => {
+              const list = selTasks.filter((x) => sectionOf(x, sections) === s.id);
+              if (!list.length) return null;
+              const n = list.filter((x) => log.done.includes(x.id)).length;
+              return (
+                <div className={'section' + (n === list.length ? ' all-done' : '')} key={s.id}>
+                  <div className="section-head">
+                    <h3>{s.label}</h3>
+                    <span className="count">{n}/{list.length}</span>
+                  </div>
+                  <ul className="tasks">
+                    {list.map((task) => (
+                      <li key={task.id}>
+                        <CheckRow label={task.label} checked={log.done.includes(task.id)} onToggle={() => toggleTask(task.id)} />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })
+          )}
+          <div className="note">
+            <label className="eyebrow" htmlFor="note">Note for this day</label>
+            <textarea id="note" placeholder="Make notes of any challenges, insights, or breakthroughs."
+              value={log.note || ''} onChange={(e) => { const v = e.target.value; updateLog(sel, (l) => ({ ...l, note: v })); }} />
+          </div>
+          <div className="photo">
+            <span className="eyebrow">Progress photo</span>
+            {log.photo && <img src={log.photo} alt="Progress for this day" />}
+            <div className="row">
+              <label className="btn file-btn">
+                {log.photo ? 'Replace photo' : 'Add photo'}
+                <input type="file" id="photoInput" accept="image/*" onChange={handlePhoto} />
+              </label>
+              {log.photo && (
+                <button className="btn" type="button" onClick={() => updateLog(sel, (l) => { const n = { ...l }; delete n.photo; return n; })}>
+                  Remove photo
+                </button>
+              )}
+            </div>
+            {photoError && <p className="err">{photoError}</p>}
+          </div>
+        </section>
+
+        <section className="card weekly" aria-label="Weekly task">
+          <div className="weekly-head">
+            <div>
+              <div className="eyebrow">{wk === weekStart(t) ? 'This week · ' : 'Week of '}{pretty(wk)}</div>
+              <h2 className="eyebrow weekly-title">Weekly task</h2>
+            </div>
+            {!weeklyEditing && (
+              <button className="btn" type="button" onClick={() => { setWeeklyDraft(weekly ? weekly.label : ''); setWeeklyEditing(true); }}>
+                {weekly ? 'Edit' : 'Add'}
+              </button>
+            )}
+          </div>
+          {weeklyEditing ? (
+            <div className="edit-row">
+              <input className="text" id="weeklyInput" maxLength={80} autoFocus value={weeklyDraft}
+                placeholder="e.g. Call with brand partner on Tuesday" aria-label="Weekly task"
+                onChange={(e) => setWeeklyDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveWeekly(); }} />
+              <button className="btn primary" type="button" onClick={saveWeekly}>Save</button>
+              <button className="btn" type="button" onClick={() => setWeeklyEditing(false)}>Cancel</button>
+            </div>
+          ) : weekly ? (
+            <CheckRow label={weekly.label} checked={!!weekly.done}
+              onToggle={() => setData((prev) => ({ ...prev, weeks: { ...prev.weeks, [wk]: { ...weekly, done: !weekly.done } } }))} />
+          ) : (
+            <p className="empty">No weekly task set. Use it for one bigger goal, like a collab call or a product launch step.</p>
+          )}
+        </section>
+
+        <section className="card grid-card" aria-label="All days">
+          <div>
+            <div className="eyebrow">Tap a past day to edit it</div>
+            <h2>All {c.length} days</h2>
+          </div>
+          <div className="days" style={{ gridTemplateColumns: `repeat(${Math.min(cols, c.length)}, minmax(0, 1fr))` }}>
+            {Array.from({ length: c.length }, (_, i) => {
+              const d = addDays(c.start, i);
+              const st = cellState(data, d, t);
+              return (
+                <button key={d} type="button" disabled={st === 'future'} onClick={() => selectDay(d)}
+                  className={`cell ${st}${d === t ? ' is-today' : ''}${d === sel ? ' selected' : ''}`}
+                  aria-label={`Day ${i + 1}, ${pretty(d)}, ${{ done: 'complete', open: 'in progress', missed: 'missed', future: 'upcoming' }[st]}`}>
+                  {i + 1}
+                </button>
+              );
+            })}
+          </div>
+          <div className="legend">
+            <span><i className="l-done" />Complete</span>
+            <span><i className="l-open" />In progress</span>
+            <span><i className="l-miss" />Missed</span>
+            <span><i />Upcoming</span>
+          </div>
+        </section>
+
+        {data.attempts.length > 0 && (
+          <section className="card history">
+            <div className="eyebrow">Past attempts</div>
+            <ol>
+              {data.attempts.map((a, i) => (
+                <li key={i}>{pretty(a.start)} to {pretty(a.end)}: reached Day {a.reached} of {a.length}</li>
+              ))}
+            </ol>
+          </section>
+        )}
+
+        {setupOpen && (
+          <Setup
+            data={data}
+            today={t}
+            onCancel={() => setSetupOpen(false)}
+            onSave={(changes) => { setData((prev) => ({ ...prev, challenge: { ...prev.challenge, ...changes } })); setSelected(t); setSetupOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+            onReset={() => { setData((prev) => ({ ...freshData(t), challenge: { ...prev.challenge, start: t } })); setSelected(t); setSetupOpen(false); }}
+          />
+        )}
+
+        <p className="foot">
+          {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'error' ? "Couldn't save. Check your connection; changes will retry on your next tap." : 'Saved to your account'}
+          {' · '}
+          <button type="button" className="link" onClick={handleSignOut}>Sign out</button>
+        </p>
       </div>
-
-      {/* Notes */}
-      <div style={styles.notesSection}>
-        <div style={styles.sectionLabel}>NOTES:</div>
-        <div style={styles.notesDivider} />
-        <textarea
-          style={styles.notesInput}
-          placeholder="Make notes of any challenges, insights, or breakthroughs you achieve."
-          value={todayNotes}
-          onChange={handleNotesChange}
-          rows={3}
-        />
-      </div>
-
-      {/* Reset & Sign Out */}
-      <button style={styles.resetButton} onClick={resetChallenge}>
-        Reset Challenge
-      </button>
-
-      <button style={styles.signOutButton} onClick={handleSignOut}>
-        Sign Out
-      </button>
-
-      {/* Completion Toast */}
-      {completedTasks.length === 10 && (
-        <div style={styles.toast}>
-          Day {currentDay - 1} Complete! 🔥
-        </div>
-      )}
     </div>
   );
 }
 
-const styles = {
-  container: {
-    minHeight: '100vh',
-    backgroundColor: '#000',
-    color: '#fff',
-    fontFamily: "'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif",
-    padding: '20px',
-    maxWidth: '480px',
-    margin: '0 auto',
-  },
-  loading: {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    height: '100vh',
-    fontSize: '16px',
-    color: '#666',
-  },
+// The admin for your routine. Changes save as you type.
+// New tasks start counting today; removed tasks stop counting today; "today only" tasks count for today alone.
+function TaskEditor({ tasks, sections, today, onChange }) {
+  const [drafts, setDrafts] = useState({});
+  const [repeat, setRepeat] = useState({});
+  const [newSection, setNewSection] = useState('');
+  const [armedSection, setArmedSection] = useState(null);
+  const tomorrow = addDays(today, 1);
+  const visible = tasks.filter((x) => !x.removed || x.removed > today);
 
-  // Auth styles
-  authContainer: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: '80vh',
-    padding: '20px',
-  },
-  authTitle: {
-    fontSize: '24px',
-    fontWeight: '600',
-    marginTop: '30px',
-    marginBottom: '24px',
-  },
-  authForm: {
-    width: '100%',
-    maxWidth: '300px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-  },
-  authInput: {
-    backgroundColor: '#111',
-    border: '1px solid #333',
-    borderRadius: '8px',
-    padding: '14px 16px',
-    color: '#fff',
-    fontSize: '16px',
-    outline: 'none',
-  },
-  authButton: {
-    backgroundColor: '#fff',
-    color: '#000',
-    border: 'none',
-    padding: '14px',
-    borderRadius: '8px',
-    fontSize: '14px',
-    fontWeight: '700',
-    letterSpacing: '1px',
-    cursor: 'pointer',
-    marginTop: '8px',
-  },
-  authSwitch: {
-    background: 'none',
-    border: 'none',
-    color: '#4ade80',
-    fontSize: '14px',
-    marginTop: '20px',
-    cursor: 'pointer',
-  },
-  dividerContainer: {
-    display: 'flex',
-    alignItems: 'center',
-    width: '100%',
-    maxWidth: '300px',
-    margin: '20px 0',
-  },
-  dividerLine: {
-    flex: 1,
-    height: '1px',
-    backgroundColor: '#333',
-  },
-  dividerText: {
-    color: '#666',
-    padding: '0 12px',
-    fontSize: '14px',
-  },
-  googleButton: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '10px',
-    width: '100%',
-    maxWidth: '300px',
-    backgroundColor: '#fff',
-    color: '#000',
-    border: 'none',
-    padding: '14px',
-    borderRadius: '8px',
-    fontSize: '14px',
-    fontWeight: '500',
-    cursor: 'pointer',
-  },
-  authError: {
-    color: '#f87171',
-    fontSize: '14px',
-    textAlign: 'center',
-  },
+  useEffect(() => {
+    if (!armedSection) return;
+    const id = setTimeout(() => setArmedSection(null), 4000);
+    return () => clearTimeout(id);
+  }, [armedSection]);
 
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: '30px',
-    paddingTop: '10px',
-  },
-  logoSection: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-  },
-  logo: {
-    width: '50px',
-    height: '50px',
-    border: '3px solid #fff',
-    borderRadius: '8px',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  logoNumber: {
-    fontSize: '20px',
-    fontWeight: '800',
-    lineHeight: 1,
-  },
-  logoSpade: {
-    fontSize: '14px',
-    marginTop: '-2px',
-  },
-  phase: {
-    fontSize: '11px',
-    fontWeight: '600',
-    letterSpacing: '1px',
-    marginTop: '6px',
-    color: '#fff',
-  },
-  daySection: {
-    textAlign: 'center',
-    flex: 1,
-  },
-  dayLabel: {
-    fontSize: '36px',
-    fontWeight: '800',
-    letterSpacing: '2px',
-  },
-  dateLabel: {
-    fontSize: '14px',
-    color: '#888',
-    marginTop: '2px',
-  },
-  calendarIcon: {
-    cursor: 'pointer',
-    padding: '8px',
-  },
+  // Drops a task added today; otherwise ends it as of today so past days keep it.
+  const retire = (list, task) => (task.added === today
+    ? list.filter((x) => x.id !== task.id)
+    : list.map((x) => (x.id === task.id ? { ...x, removed: today } : x)));
 
-  taskList: {
-    marginBottom: '24px',
-  },
-  taskRow: {
-    display: 'flex',
-    alignItems: 'center',
-    padding: '18px 0',
-    cursor: 'pointer',
-  },
-  checkbox: {
-    width: '28px',
-    height: '28px',
-    borderRadius: '50%',
-    border: '2px solid #444',
-    marginRight: '16px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-    transition: 'all 0.2s ease',
-  },
-  checkboxChecked: {
-    backgroundColor: '#4ade80',
-    borderColor: '#4ade80',
-  },
-  checkmark: {
-    color: '#000',
-    fontSize: '16px',
-    fontWeight: '700',
-  },
-  taskContent: {
-    flex: 1,
-  },
-  taskLabel: {
-    fontSize: '17px',
-    fontWeight: '500',
-    color: '#fff',
-  },
-  taskLabelDone: {
-    color: '#666',
-    textDecoration: 'line-through',
-  },
-  cameraIcon: {
-    position: 'relative',
-    padding: '8px',
-    cursor: 'pointer',
-  },
-  photoDot: {
-    position: 'absolute',
-    top: '6px',
-    right: '6px',
-    width: '8px',
-    height: '8px',
-    borderRadius: '50%',
-    backgroundColor: '#4ade80',
-  },
-  divider: {
-    height: '1px',
-    backgroundColor: '#222',
-    marginLeft: '44px',
-  },
+  const add = (sectionId) => {
+    const label = (drafts[sectionId] || '').trim();
+    if (!label) return;
+    const once = repeat[sectionId] === 'once';
+    onChange({ tasks: [...tasks, { id: uid(), section: sectionId, label, added: today, ...(once ? { removed: tomorrow } : {}) }] });
+    setDrafts((d) => ({ ...d, [sectionId]: '' }));
+  };
+  const remove = (task) => onChange({ tasks: retire(tasks, task) });
+  const rename = (task, label) => onChange({ tasks: tasks.map((x) => (x.id === task.id ? { ...x, label } : x)) });
+  const move = (list, i, dir) => {
+    const a = tasks.indexOf(list[i]);
+    const b = tasks.indexOf(list[i + dir]);
+    const next = [...tasks];
+    [next[a], next[b]] = [next[b], next[a]];
+    onChange({ tasks: next });
+  };
 
-  photoPreviewSection: {
-    marginBottom: '24px',
-  },
-  photoPreview: {
-    width: '100%',
-    height: '200px',
-    objectFit: 'cover',
-    borderRadius: '8px',
-    marginTop: '8px',
-  },
+  const addSection = () => {
+    const label = newSection.trim();
+    if (!label) return;
+    onChange({ sections: [...sections, { id: uid(), label }] });
+    setNewSection('');
+  };
+  const renameSection = (id, label) => onChange({ sections: sections.map((s) => (s.id === id ? { ...s, label } : s)) });
+  const moveSection = (i, dir) => {
+    const next = [...sections];
+    [next[i], next[i + dir]] = [next[i + dir], next[i]];
+    onChange({ sections: next });
+  };
+  const deleteSection = (s) => {
+    if (armedSection !== s.id) return setArmedSection(s.id);
+    let next = tasks;
+    visible.filter((x) => sectionOf(x, sections) === s.id).forEach((task) => { next = retire(next, task); });
+    onChange({ tasks: next, sections: sections.filter((x) => x.id !== s.id) });
+    setArmedSection(null);
+  };
 
-  weeklySection: {
-    marginBottom: '24px',
-    paddingTop: '16px',
-    borderTop: '1px solid #222',
-  },
-  weeklyHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '12px',
-  },
-  sectionLabel: {
-    fontSize: '14px',
-    fontWeight: '700',
-    letterSpacing: '1px',
-    color: '#fff',
-  },
-  editBtn: {
-    background: 'none',
-    border: 'none',
-    color: '#4ade80',
-    fontSize: '14px',
-    cursor: 'pointer',
-    fontWeight: '500',
-  },
-  weeklyTaskRow: {
-    display: 'flex',
-    alignItems: 'center',
-    cursor: 'pointer',
-  },
-  weeklyPlaceholder: {
-    color: '#444',
-    fontSize: '15px',
-    fontStyle: 'italic',
-  },
-  weeklyEdit: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-  },
-  weeklyInput: {
-    backgroundColor: '#111',
-    border: '1px solid #333',
-    borderRadius: '8px',
-    padding: '12px',
-    color: '#fff',
-    fontSize: '15px',
-    outline: 'none',
-  },
-  weeklyBtns: {
-    display: 'flex',
-    gap: '8px',
-    justifyContent: 'flex-end',
-  },
-  cancelBtn: {
-    background: 'none',
-    border: '1px solid #333',
-    color: '#888',
-    padding: '8px 16px',
-    borderRadius: '6px',
-    fontSize: '14px',
-    cursor: 'pointer',
-  },
-  saveBtn: {
-    backgroundColor: '#4ade80',
-    border: 'none',
-    color: '#000',
-    padding: '8px 16px',
-    borderRadius: '6px',
-    fontSize: '14px',
-    fontWeight: '600',
-    cursor: 'pointer',
-  },
+  return (
+    <div className="task-editor">
+      {sections.map((s, si) => {
+        const list = visible.filter((x) => sectionOf(x, sections) === s.id);
+        return (
+          <div className="editor-section" key={s.id}>
+            <div className="row section-row">
+              <div className="order">
+                <button type="button" className="icon-btn small" aria-label={`Move ${s.label} section up`} disabled={si === 0} onClick={() => moveSection(si, -1)}>↑</button>
+                <button type="button" className="icon-btn small" aria-label={`Move ${s.label} section down`} disabled={si === sections.length - 1} onClick={() => moveSection(si, 1)}>↓</button>
+              </div>
+              <input className="text section-input" id={'sec-' + s.id} maxLength={30} aria-label="Section name" value={s.label}
+                onChange={(e) => renameSection(s.id, e.target.value)}
+                onBlur={(e) => { if (!e.target.value.trim()) renameSection(s.id, 'Untitled'); }} />
+              <button type="button" className={'btn danger small-btn' + (armedSection === s.id ? ' armed' : '')}
+                disabled={sections.length === 1} onClick={() => deleteSection(s)}>
+                {armedSection === s.id ? (list.length ? `Delete + ${list.length} tasks?` : 'Delete?') : 'Delete'}
+              </button>
+            </div>
 
-  notesSection: {
-    marginBottom: '24px',
-  },
-  notesDivider: {
-    height: '1px',
-    backgroundColor: '#444',
-    marginTop: '8px',
-    marginBottom: '12px',
-  },
-  notesInput: {
-    width: '100%',
-    backgroundColor: 'transparent',
-    border: 'none',
-    color: '#888',
-    fontSize: '15px',
-    fontFamily: 'inherit',
-    resize: 'none',
-    outline: 'none',
-    lineHeight: '1.5',
-    boxSizing: 'border-box',
-  },
+            {list.map((task, i) => (
+              <div className="row" key={task.id}>
+                <div className="order">
+                  <button type="button" className="icon-btn small" aria-label={`Move ${task.label} up`} disabled={i === 0} onClick={() => move(list, i, -1)}>↑</button>
+                  <button type="button" className="icon-btn small" aria-label={`Move ${task.label} down`} disabled={i === list.length - 1} onClick={() => move(list, i, 1)}>↓</button>
+                </div>
+                <div className="task-input">
+                  <input className="text" id={'task-' + task.id} maxLength={60} aria-label={`${s.label} task ${i + 1}`} value={task.label}
+                    onChange={(e) => rename(task, e.target.value)}
+                    onBlur={(e) => { if (!e.target.value.trim() && visible.length > 1) remove(task); }} />
+                  {task.removed === tomorrow && <span className="tag">Today only</span>}
+                </div>
+                <button className="icon-btn" type="button" aria-label={`Remove ${task.label || 'task'}`}
+                  disabled={visible.length === 1} onClick={() => remove(task)}>×</button>
+              </div>
+            ))}
+            {!list.length && <p className="hint">No tasks yet. Empty sections are hidden from your checklist.</p>}
 
-  resetButton: {
-    width: '100%',
-    background: 'none',
-    border: '1px solid #333',
-    color: '#666',
-    padding: '14px',
-    borderRadius: '8px',
-    fontSize: '14px',
-    cursor: 'pointer',
-    marginBottom: '12px',
-  },
+            <div className="row add-row">
+              <input className="text" id={'new-' + s.id} maxLength={60} placeholder={`Add to ${s.label}`} aria-label={`New ${s.label} task`}
+                value={drafts[s.id] || ''} onChange={(e) => { const v = e.target.value; setDrafts((d) => ({ ...d, [s.id]: v })); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') add(s.id); }} />
+              <select className="text repeat" id={'repeat-' + s.id} aria-label="How often"
+                value={repeat[s.id] || 'daily'} onChange={(e) => { const v = e.target.value; setRepeat((r) => ({ ...r, [s.id]: v })); }}>
+                <option value="daily">Every day</option>
+                <option value="once">Today only</option>
+              </select>
+              <button className="btn primary" type="button" onClick={() => add(s.id)} disabled={!(drafts[s.id] || '').trim()}>Add</button>
+            </div>
+          </div>
+        );
+      })}
 
-  signOutButton: {
-    width: '100%',
-    background: 'none',
-    border: 'none',
-    color: '#666',
-    padding: '14px',
-    fontSize: '14px',
-    cursor: 'pointer',
-    marginBottom: '40px',
-  },
+      <div className="editor-section new-section">
+        <h3>New section</h3>
+        <div className="row add-row">
+          <input className="text" id="newSection" maxLength={30} placeholder="e.g. 100 Anxiety Tips" aria-label="New section name"
+            value={newSection} onChange={(e) => setNewSection(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addSection(); }} />
+          <button className="btn primary" type="button" onClick={addSection} disabled={!newSection.trim()}>Add section</button>
+        </div>
+      </div>
 
-  toast: {
-    position: 'fixed',
-    bottom: '40px',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    backgroundColor: '#4ade80',
-    color: '#000',
-    padding: '14px 24px',
-    borderRadius: '30px',
-    fontWeight: '600',
-    fontSize: '15px',
-    zIndex: 100,
-  },
+      <p className="hint">Changes start today. Past days keep the tasks they had, so editing your routine never breaks your streak.</p>
+    </div>
+  );
+}
 
-  modal: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.95)',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 1000,
-    padding: '20px',
-  },
-  modalContent: {
-    backgroundColor: '#111',
-    padding: '40px',
-    borderRadius: '16px',
-    textAlign: 'center',
-    maxWidth: '320px',
-  },
-  modalIcon: {
-    fontSize: '40px',
-    marginBottom: '16px',
-  },
-  modalTitle: {
-    fontSize: '22px',
-    fontWeight: '700',
-    marginBottom: '8px',
-  },
-  modalText: {
-    color: '#888',
-    marginBottom: '24px',
-    fontSize: '15px',
-    lineHeight: '1.5',
-  },
-  modalButton: {
-    backgroundColor: '#fff',
-    color: '#000',
-    border: 'none',
-    padding: '14px 32px',
-    borderRadius: '8px',
-    fontSize: '14px',
-    fontWeight: '700',
-    letterSpacing: '1px',
-    cursor: 'pointer',
-    width: '100%',
-    marginBottom: '12px',
-  },
-  modalButtonSecondary: {
-    backgroundColor: 'transparent',
-    color: '#666',
-    border: '1px solid #333',
-    padding: '14px 32px',
-    borderRadius: '8px',
-    fontSize: '14px',
-    fontWeight: '500',
-    cursor: 'pointer',
-    width: '100%',
-  },
+function Setup({ data, today, onCancel, onSave, onReset }) {
+  const c = data.challenge;
+  const preset = [30, 75, 100].includes(c.length);
+  const [name, setName] = useState(c.name);
+  const [lenPick, setLenPick] = useState(preset ? String(c.length) : 'custom');
+  const [lenCustom, setLenCustom] = useState(preset ? '' : String(c.length));
+  const [rule, setRule] = useState(c.rule);
+  const [grace, setGrace] = useState(String(c.grace));
+  const [start, setStart] = useState(c.start);
+  const [error, setError] = useState('');
+  const [armed, setArmed] = useState(false);
+  const ref = useRef(null);
 
-  calendarModal: {
-    backgroundColor: '#111',
-    padding: '24px',
-    borderRadius: '16px',
-    maxWidth: '400px',
-    width: '100%',
-  },
-  calendarHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '20px',
-  },
-  calendarTitle: {
-    fontSize: '18px',
-    fontWeight: '700',
-    letterSpacing: '2px',
-  },
-  closeButton: {
-    background: 'none',
-    border: 'none',
-    color: '#666',
-    fontSize: '24px',
-    cursor: 'pointer',
-  },
-  calendarGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(7, 1fr)',
-    gap: '6px',
-    marginBottom: '20px',
-  },
-  calendarDay: {
-    aspectRatio: '1',
-    backgroundColor: '#1a1a1a',
-    borderRadius: '6px',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    fontSize: '13px',
-    fontWeight: '600',
-    cursor: 'pointer',
-  },
-  calendarDayCompleted: {
-    backgroundColor: '#4ade80',
-    color: '#000',
-  },
-  calendarDayCurrent: {
-    border: '2px solid #fff',
-  },
-  calendarDayFuture: {
-    backgroundColor: '#0a0a0a',
-    color: '#333',
-    cursor: 'default',
-  },
-  calendarLegend: {
-    display: 'flex',
-    justifyContent: 'center',
-    gap: '24px',
-  },
-  legendItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    fontSize: '12px',
-    color: '#888',
-  },
-  legendDot: {
-    width: '12px',
-    height: '12px',
-    borderRadius: '3px',
-    boxSizing: 'border-box',
-  },
+  useEffect(() => { if (ref.current) ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, []);
+  useEffect(() => {
+    if (!armed) return;
+    const id = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(id);
+  }, [armed]);
 
-  historyModal: {
-    backgroundColor: '#111',
-    padding: '24px',
-    borderRadius: '16px',
-    maxWidth: '400px',
-    width: '100%',
-    maxHeight: '80vh',
-    overflow: 'auto',
-  },
-  historyHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '8px',
-  },
-  historyTitle: {
-    fontSize: '24px',
-    fontWeight: '800',
-    letterSpacing: '2px',
-  },
-  historyDate: {
-    color: '#666',
-    fontSize: '14px',
-    marginBottom: '16px',
-  },
-  historyPhoto: {
-    width: '100%',
-    borderRadius: '8px',
-    marginBottom: '16px',
-  },
-  historyNotes: {
-    backgroundColor: '#1a1a1a',
-    padding: '16px',
-    borderRadius: '8px',
-    marginBottom: '16px',
-  },
-  historyNotesLabel: {
-    fontSize: '12px',
-    fontWeight: '700',
-    letterSpacing: '1px',
-    marginBottom: '8px',
-    color: '#888',
-  },
-  historyNotesText: {
-    color: '#ccc',
-    fontSize: '14px',
-    lineHeight: '1.5',
-    whiteSpace: 'pre-wrap',
-  },
-  historyTasks: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-  },
-  historyTaskRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-  },
-  historyCheck: {
-    width: '22px',
-    height: '22px',
-    borderRadius: '50%',
-    border: '2px solid #333',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '12px',
-    fontWeight: '700',
-    color: '#000',
-    flexShrink: 0,
-  },
-  historyCheckDone: {
-    backgroundColor: '#4ade80',
-    borderColor: '#4ade80',
-  },
-  historyTaskText: {
-    fontSize: '14px',
-    color: '#ccc',
-  },
-};
+  const save = () => {
+    const length = parseInt(lenPick === 'custom' ? lenCustom : lenPick, 10);
+    if (!(length >= 7 && length <= 365)) return setError('Pick a length between 7 and 365 days.');
+    const g = parseInt(grace, 10);
+    if (rule === 'grace' && !(g >= 1 && g <= 10)) return setError('Grace days need to be between 1 and 10.');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return setError('Choose the date of Day 1.');
+    onSave({ name: name.trim() || '75 Creator', length, rule, grace: g || 2, start });
+  };
+
+  return (
+    <section className="card setup" ref={ref} aria-label="Edit challenge">
+      <div>
+        <div className="eyebrow">Your rules</div>
+        <h2>Edit challenge</h2>
+      </div>
+
+      <div className="field">
+        <label className="eyebrow" htmlFor="fName">Challenge name</label>
+        <input className="text" id="fName" maxLength={40} value={name} onChange={(e) => setName(e.target.value)} />
+      </div>
+
+      <div className="field">
+        <span className="eyebrow">Length</span>
+        <div className="chips" role="radiogroup" aria-label="Length in days">
+          {['30', '75', '100', 'custom'].map((v) => (
+            <label className="chip" key={v}>
+              <input type="radio" name="len" id={'len' + v} value={v} checked={lenPick === v} onChange={() => setLenPick(v)} />
+              <span>{v === 'custom' ? 'Custom' : v + ' days'}</span>
+            </label>
+          ))}
+          <input className="text num" id="lenCustom" type="number" min="7" max="365" placeholder="Days" aria-label="Custom length in days"
+            value={lenCustom} onFocus={() => setLenPick('custom')} onChange={(e) => setLenCustom(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="field">
+        <span className="eyebrow">If you miss a day</span>
+        <div className="rules">
+          <label className={rule === 'strict' ? 'on' : ''}>
+            <input type="radio" name="rule" id="ruleStrict" checked={rule === 'strict'} onChange={() => setRule('strict')} />
+            <span><b>Hard rules</b><small>Miss one day and you restart at Day 1. The real 75 Hard way.</small></span>
+          </label>
+          <label className={rule === 'grace' ? 'on' : ''}>
+            <input type="radio" name="rule" id="ruleGrace" checked={rule === 'grace'} onChange={() => setRule('grace')} />
+            <span><b>Grace days</b><small>You can miss up to{' '}
+              <input className="text num inline" id="graceN" type="number" min="1" max="10" aria-label="Number of grace days"
+                value={grace} onFocus={() => setRule('grace')} onChange={(e) => setGrace(e.target.value)} />
+              {' '}days before you restart.</small></span>
+          </label>
+        </div>
+      </div>
+
+      <div className="field">
+        <label className="eyebrow" htmlFor="fStart">Day 1 was</label>
+        <input className="text date" id="fStart" type="date" max={today} value={start} onChange={(e) => setStart(e.target.value)} />
+      </div>
+
+      {error && <p className="err">{error}</p>}
+
+      <div className="actions">
+        <div className="row">
+          <button className="btn primary" type="button" onClick={save}>Save</button>
+          <button className="btn" type="button" onClick={onCancel}>Cancel</button>
+        </div>
+        <button className={'btn danger' + (armed ? ' armed' : '')} type="button"
+          onClick={() => { if (armed) { setArmed(false); onReset(); } else setArmed(true); }}>
+          {armed ? 'Tap again to reset everything' : 'Reset challenge'}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800;900&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap');
+
+:root {
+  --ground: #EDF0F4;
+  --surface: #FFFFFF;
+  --ink: #10151C;
+  --muted: #5A6472;
+  --line: #D3DAE3;
+  --accent: #2448F2;
+  --accent-ink: #FFFFFF;
+  --accent-soft: #E3E9FF;
+  --miss: #D12F36;
+  --miss-soft: #FBE4E5;
+  --partial: #C98A0C;
+  --display: "Big Shoulders Display", "Arial Narrow", Impact, sans-serif;
+  --body: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --ground: #0C1016; --surface: #151B24; --ink: #E7EBF1; --muted: #8B95A4; --line: #263040;
+    --accent: #6F8CFF; --accent-ink: #0C1016; --accent-soft: #1C2647;
+    --miss: #FF6B70; --miss-soft: #3A1A1D; --partial: #F0B547;
+  }
+}
+
+html, body, #root { background: var(--ground); }
+body { color: var(--ink); font: 16px/1.5 var(--body); }
+.app {
+  min-height: 100%;
+  padding: 20px max(16px, env(safe-area-inset-right, 0px)) 64px max(16px, env(safe-area-inset-left, 0px));
+}
+.wrap { max-width: 640px; margin: 0 auto; display: grid; gap: 18px; }
+button, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.loading { min-height: 60vh; display: grid; place-content: center; gap: 12px; text-align: center; color: var(--muted); }
+
+.eyebrow { font: 500 11px/1.2 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+h2 { margin: 0; }
+
+header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.logo { display: flex; align-items: center; gap: 10px; }
+.logo-mark { font: 900 48px/.8 var(--display); letter-spacing: -.02em; display: flex; align-items: flex-start; }
+.logo-mark span { font-size: 18px; margin-left: 2px; }
+.logo-word { font: 500 12px/1 var(--mono); letter-spacing: .3em; color: var(--muted); }
+.challenge-name { font: 900 22px/1 var(--display); text-transform: uppercase; margin: 10px 0 0; color: var(--muted); }
+
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 8px 16px; font-weight: 600; font-size: 14px; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.wide { width: 100%; padding: 12px 16px; }
+.btn.danger { color: var(--miss); }
+.btn.danger.armed { background: var(--miss); color: var(--surface); border-color: var(--miss); }
+.link { background: none; border: 0; padding: 0; color: var(--muted); text-decoration: underline; font-size: inherit; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.banner { border-radius: 12px; padding: 14px 16px; display: grid; gap: 10px; }
+.banner p { margin: 0; }
+.banner.fail { background: var(--miss-soft); }
+.banner.fail strong { color: var(--miss); }
+
+.finished { padding: 22px 20px; display: grid; gap: 6px; background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.finished .eyebrow { color: inherit; opacity: .8; }
+.finished h2 { font: 900 36px/1 var(--display); text-transform: uppercase; }
+.finished p { margin: 0; }
+
+.score { padding: 20px 20px 18px; display: grid; gap: 16px; }
+.score-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.daynum { font: 900 clamp(96px, 30vw, 156px)/.8 var(--display); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.daynum small { font-size: .32em; color: var(--muted); font-weight: 700; margin-left: 4px; }
+.stats { display: grid; grid-template-columns: repeat(3, auto); gap: 6px 22px; }
+.stat b { display: block; font: 800 34px/1 var(--display); font-variant-numeric: tabular-nums; margin-top: 4px; }
+.rail { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.rail i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .4s ease; }
+.rule { margin: 0; color: var(--muted); font-size: 14px; }
+
+.today { overflow: hidden; scroll-margin-top: 16px; }
+.today-head { padding: 16px 20px 12px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.today-head h2 { font: 800 26px/1 var(--display); text-transform: uppercase; margin-top: 4px; }
+.count { font: 500 13px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.tasks { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.task { width: 100%; display: flex; align-items: center; gap: 14px; padding: 14px 20px; background: none; border: 0; border-bottom: 1px solid var(--line); text-align: left; font-size: 17px; }
+.task:hover { background: var(--ground); }
+.box { flex: none; width: 26px; height: 26px; border-radius: 7px; border: 2px solid var(--line); display: grid; place-items: center; transition: background .15s, border-color .15s; }
+.box svg { width: 16px; height: 16px; opacity: 0; }
+.task[aria-pressed="true"] .box { background: var(--accent); border-color: var(--accent); }
+.task[aria-pressed="true"] .box svg { opacity: 1; }
+.task[aria-pressed="true"] .label { color: var(--muted); }
+.note { padding: 14px 20px 18px; display: grid; gap: 6px; }
+.note textarea { width: 100%; min-height: 64px; resize: vertical; border: 1px solid var(--line); border-radius: 10px; background: var(--ground); padding: 10px 12px; font-size: 16px; }
+.photo { padding: 0 20px 18px; display: grid; gap: 10px; }
+.photo img { width: 100%; max-height: 360px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); }
+.file-btn { position: relative; overflow: hidden; }
+.file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+.weekly { padding: 16px 20px; display: grid; gap: 10px; }
+.weekly-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.weekly-title { color: var(--ink); margin-top: 4px; font-size: 13px; }
+.weekly .task { padding: 6px 0; border: 0; }
+.weekly .task:hover { background: none; }
+.empty { color: var(--muted); margin: 0; font-size: 15px; }
+.edit-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.edit-row .text { flex: 1 1 200px; }
+
+.grid-card { padding: 18px 20px 20px; display: grid; gap: 14px; }
+.grid-card h2 { font: 800 22px/1 var(--display); text-transform: uppercase; margin-top: 4px; }
+.days { display: grid; gap: 4px; }
+.cell { aspect-ratio: 1; max-width: 100%; border-radius: 5px; border: 1px solid var(--line); background: transparent; font: 500 9px/1 var(--mono); color: var(--muted); display: grid; place-items: center; padding: 0; font-variant-numeric: tabular-nums; }
+.cell.done { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.cell.missed { background: var(--miss-soft); border-color: var(--miss); color: var(--miss); }
+.cell.open { border: 2px solid var(--partial); color: var(--ink); }
+.cell.future { border-style: dashed; cursor: default; }
+.cell.is-today { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ink); }
+.cell.selected:not(.is-today) { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--line); display: inline-block; }
+.legend .l-done { background: var(--accent); border-color: var(--accent); }
+.legend .l-open { border: 2px solid var(--partial); }
+.legend .l-miss { background: var(--miss-soft); border-color: var(--miss); }
+
+.history { padding: 16px 20px; display: grid; gap: 8px; }
+.history ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 15px; }
+
+.setup { padding: 20px; display: grid; gap: 20px; }
+.setup h2 { font: 800 26px/1 var(--display); text-transform: uppercase; margin-top: 4px; }
+.field { display: grid; gap: 8px; }
+.text { width: 100%; border: 1px solid var(--line); border-radius: 10px; background: var(--ground); padding: 10px 12px; font-size: 16px; }
+.text.num { width: 84px; }
+.text.inline { width: 64px; padding: 4px 8px; display: inline-block; }
+.text.date { max-width: 220px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.chip input { position: absolute; opacity: 0; pointer-events: none; }
+.chip span { display: inline-block; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); font-weight: 600; font-size: 14px; cursor: pointer; }
+.chip input:checked + span { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.chip input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rules { display: grid; gap: 8px; }
+.rules label { display: flex; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; cursor: pointer; }
+.rules label.on { border-color: var(--accent); background: var(--accent-soft); }
+.rules input[type="radio"] { margin-top: 4px; accent-color: var(--accent); }
+.rules b { display: block; }
+.rules small { color: var(--muted); font-size: 14px; }
+.head-right { display: flex; align-items: center; gap: 12px; }
+.section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 14px 20px 8px; border-top: 1px solid var(--line); background: var(--ground); }
+.section h3, .editor-section h3 { margin: 0; font: 800 18px/1 var(--display); text-transform: uppercase; letter-spacing: .02em; }
+.section.all-done .section-head .count { color: var(--accent); }
+.section .tasks { border-top: 1px solid var(--line); }
+.section-row { align-items: center; }
+.section-input { font: 800 18px/1.1 var(--display) !important; text-transform: uppercase; letter-spacing: .02em; background: transparent !important; }
+.small-btn { flex: none; padding: 6px 12px; font-size: 13px; }
+.task-input { flex: 1; min-width: 0; position: relative; display: flex; }
+.task-input .text { flex: 1; }
+.tag { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font: 500 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--accent); background: var(--accent-soft); padding: 4px 6px; border-radius: 4px; pointer-events: none; }
+.repeat { flex: none !important; width: auto !important; padding-right: 8px; }
+.new-section { padding-top: 16px; border-top: 1px dashed var(--line); }
+.add-row { flex-wrap: wrap !important; }
+.add-row .text:first-child { flex: 1 1 180px; }
+.task-editor { display: grid; gap: 20px; padding: 14px 20px 18px; border-top: 1px solid var(--line); }
+.editor-section { display: grid; gap: 8px; }
+.task-editor .row { flex-wrap: nowrap; align-items: stretch; }
+.task-editor .text { flex: 1; min-width: 0; width: auto; }
+.task-editor .add-row { margin-top: 6px; }
+.order { display: grid; gap: 2px; }
+.hint { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.icon-btn { flex: none; width: 42px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 20px; line-height: 1; }
+.icon-btn.small { width: 30px; height: 21px; font-size: 13px; border-radius: 6px; }
+.icon-btn:hover:not(:disabled) { color: var(--ink); border-color: var(--muted); }
+.icon-btn:disabled, .btn:disabled { opacity: .35; cursor: default; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center; }
+.err { color: var(--miss); font-size: 14px; margin: 0; }
+.foot { text-align: center; color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+
+.auth { max-width: 360px; margin: 8vh auto 0; padding: 28px 24px; display: grid; gap: 16px; justify-items: center; }
+.auth h2 { font: 800 26px/1 var(--display); text-transform: uppercase; }
+.auth-form { width: 100%; display: grid; gap: 10px; }
+.or { width: 100%; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+`;
