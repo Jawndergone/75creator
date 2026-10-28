@@ -43,6 +43,12 @@ const pretty = (s) => parse(s).toLocaleDateString(undefined, { weekday: 'short',
 const uid = () => Math.random().toString(36).slice(2, 9);
 // Weeks run Monday to Sunday.
 const weekStart = (s) => addDays(s, -((parse(s).getDay() + 6) % 7));
+// A week holds a list of tasks; weeks saved before lists existed held a single { label, done }.
+const weekItems = (w) => {
+  if (!w) return [];
+  if (w.items) return w.items;
+  return w.label ? [{ id: 'single', label: w.label, done: !!w.done }] : [];
+};
 
 // ---- challenge logic ----
 const endDate = (c) => addDays(c.start, c.length - 1);
@@ -112,6 +118,7 @@ function freshData(start) {
     logs: {},
     attempts: [],
     weeks: {},
+    horizon: [],
   };
 }
 
@@ -144,8 +151,182 @@ function migrateOldRow(row) {
   }
 
   data.challenge.start = start || addDays(t, -((row.current_day || 1) - 1));
-  if (row.weekly_task) data.weeks[weekStart(t)] = { label: row.weekly_task, done: !!row.weekly_task_completed };
+  if (row.weekly_task) data.weeks[weekStart(t)] = { items: [{ id: uid(), label: row.weekly_task, done: !!row.weekly_task_completed }] };
   return data;
+}
+
+// ---- backup on this device ----
+// A copy of the latest saved data, used if the server copy is ever overwritten by an old version of the app.
+const backupKey = (userId) => '75creator-backup-' + userId;
+function readBackup(userId) {
+  try {
+    const b = JSON.parse(localStorage.getItem(backupKey(userId)));
+    return b && b.version === 2 && b.challenge ? b : null;
+  } catch (e) {
+    return null;
+  }
+}
+function writeBackup(userId, data) {
+  try {
+    localStorage.setItem(backupKey(userId), JSON.stringify(data));
+  } catch (e) {
+    // Storage full (usually photos): keep everything except the photos.
+    try {
+      const logs = {};
+      Object.entries(data.logs).forEach(([d, l]) => { const { photo, ...rest } = l; logs[d] = rest; });
+      localStorage.setItem(backupKey(userId), JSON.stringify({ ...data, logs }));
+    } catch (e2) { /* no room at all; the server copy still stands */ }
+  }
+}
+
+// ---- reminders (web push) ----
+// Public half of the push key pair. The private half lives only in Vercel's environment variables.
+const VAPID_PUBLIC_KEY = 'BLq2nHewJb5Uoei8X0U4Ap7XGJ18leC5Qi76_OnavSbUkklNQG828fR3BYuPHNLhX9r8ekrhkYMpA8mLL73_ci0';
+
+const base64ToBytes = (s) => {
+  const b64 = (s + '='.repeat((4 - (s.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+};
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+async function enableReminders(user) {
+  if (!pushSupported()) {
+    throw new Error(isIOS() && !isStandalone()
+      ? 'On iPhone, add 75 Creator to your Home Screen first (Share → Add to Home Screen), open it from there, then turn on reminders.'
+      : "This browser doesn't support notifications.");
+  }
+  const permission = await window.Notification.requestPermission();
+  if (permission !== 'granted') throw new Error('Notifications are blocked. Allow them for 75 Creator in your settings, then try again.');
+  const reg = await navigator.serviceWorker.register('/sw.js');
+  await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64ToBytes(VAPID_PUBLIC_KEY) });
+  const { error } = await supabase.from('push_subscriptions').upsert({
+    endpoint: sub.endpoint,
+    user_id: user.id,
+    subscription: sub.toJSON(),
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  });
+  if (error) throw new Error("Reminders couldn't be saved to your account: " + error.message);
+  reg.showNotification('Reminders are on', {
+    body: "You'll get a morning heads-up on days you have things to task or schedule.",
+    icon: '/icon-192.png',
+  });
+}
+
+const KIND_LABEL = { task: 'Task', schedule: 'Schedule' };
+
+// Horizon items whose day has come: highlighted at the top until handled.
+function DueCard({ items, today, sections, onUpdate, onAddToToday }) {
+  const [target, setTarget] = useState(sections[0] ? sections[0].id : '');
+  if (!items.length) return null;
+  const hasTasks = items.some((i) => i.kind === 'task');
+  return (
+    <section className="card due" aria-label="On deck today">
+      <div>
+        <div className="eyebrow">On deck today</div>
+        <h2>{items.length === 1 ? '1 thing to plan' : `${items.length} things to plan`}</h2>
+      </div>
+      <ul className="due-list">
+        {items.map((item) => (
+          <li key={item.id} className="due-item">
+            <div className="due-text">
+              <span className={'kind ' + item.kind}>{KIND_LABEL[item.kind]}</span>
+              <span>{item.text}</span>
+              {item.date < today && <span className="overdue">from {pretty(item.date)}</span>}
+            </div>
+            <div className="row">
+              {item.kind === 'task' && (
+                <button className="btn primary" type="button" onClick={() => onAddToToday(item, target)}>Add to today's tasks</button>
+              )}
+              <button className="btn" type="button" onClick={() => onUpdate(item.id, { done: true })}>
+                {item.kind === 'schedule' ? 'Scheduled' : 'Done'}
+              </button>
+              <button className="btn" type="button" onClick={() => onUpdate(item.id, { date: addDays(today, 1) })}>Tomorrow</button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {hasTasks && sections.length > 1 && (
+        <label className="due-target" htmlFor="dueTarget">
+          Add tasks to
+          <select className="text" id="dueTarget" value={target} onChange={(e) => setTarget(e.target.value)}>
+            {sections.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+        </label>
+      )}
+    </section>
+  );
+}
+
+// Capture things to task or schedule later; they wait here until their day.
+function HorizonCard({ items, today, onAdd, onRemove, reminders, onEnableReminders }) {
+  const [text, setText] = useState('');
+  const [kind, setKind] = useState('task');
+  const [date, setDate] = useState(addDays(today, 1));
+  const upcoming = items.filter((i) => !i.done && i.date > today).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const tomorrow = addDays(today, 1);
+
+  const add = () => {
+    const v = text.trim();
+    if (!v) return;
+    onAdd({ id: uid(), text: v, kind, date: date > today ? date : today, created: today });
+    setText('');
+  };
+
+  return (
+    <section className="card horizon" aria-label="On the horizon">
+      <div>
+        <div className="eyebrow">Capture for later</div>
+        <h2>On the horizon</h2>
+      </div>
+      <div className="capture">
+        <input className="text" id="horizonText" maxLength={100} value={text} placeholder="Something to task or schedule"
+          aria-label="Something to task or schedule" onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') add(); }} />
+        <div className="row">
+          <div className="seg" role="radiogroup" aria-label="Type">
+            {['task', 'schedule'].map((k) => (
+              <button key={k} type="button" role="radio" aria-checked={kind === k} className={kind === k ? 'on' : ''} onClick={() => setKind(k)}>
+                {KIND_LABEL[k]}
+              </button>
+            ))}
+          </div>
+          <input className="text date-small" id="horizonDate" type="date" min={today} value={date}
+            aria-label="Day to bring it up" onChange={(e) => setDate(e.target.value)} />
+          <button className="btn primary" type="button" onClick={add} disabled={!text.trim()}>Add</button>
+        </div>
+      </div>
+
+      {upcoming.length ? (
+        <ul className="upcoming">
+          {upcoming.map((item) => (
+            <li key={item.id}>
+              <span className="when">{item.date === tomorrow ? 'Tomorrow' : pretty(item.date)}</span>
+              <span className={'kind ' + item.kind}>{KIND_LABEL[item.kind]}</span>
+              <span className="what">{item.text}</span>
+              <button className="icon-btn" type="button" aria-label={`Remove ${item.text}`} onClick={() => onRemove(item.id)}>×</button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="empty">Nothing on the horizon. Add things you need to task or schedule, and they'll show up at the top of the app on that day.</p>
+      )}
+
+      <div className="reminders">
+        {reminders.status === 'on' ? (
+          <p className="on-note">Morning reminders are on for this device.</p>
+        ) : (
+          <button className="btn" type="button" disabled={reminders.status === 'working'} onClick={onEnableReminders}>
+            {reminders.status === 'working' ? 'Turning on…' : 'Turn on morning reminders'}
+          </button>
+        )}
+        {reminders.error && <p className="err">{reminders.error}</p>}
+      </div>
+    </section>
+  );
 }
 
 const CheckIcon = () => (
@@ -190,6 +371,7 @@ export default function App() {
   const [weeklyEditing, setWeeklyEditing] = useState(false);
   const [weeklyDraft, setWeeklyDraft] = useState('');
   const [photoError, setPhotoError] = useState('');
+  const [reminders, setReminders] = useState({ status: 'off', error: '' });
   const loadedRef = useRef(false);
   const checklistRef = useRef(null);
 
@@ -207,6 +389,15 @@ export default function App() {
   useEffect(() => {
     if (user) loadUserProgress();
     else { setIsLoading(false); loadedRef.current = false; setData(null); }
+  }, [user]);
+
+  // Show reminders as on if this device is already subscribed.
+  useEffect(() => {
+    if (!user || !pushSupported() || window.Notification.permission !== 'granted') return;
+    navigator.serviceWorker.getRegistration()
+      .then((reg) => (reg ? reg.pushManager.getSubscription() : null))
+      .then((sub) => { if (sub) setReminders({ status: 'on', error: '' }); })
+      .catch(() => {});
   }, [user]);
 
   // Roll over to the new day if the app stays open past midnight.
@@ -251,10 +442,14 @@ export default function App() {
         next = row.history.v2;
         if (!next.weeks) next.weeks = {};
         if (!next.attempts) next.attempts = [];
+        if (!next.horizon) next.horizon = [];
         if (!next.challenge.sections) next.challenge.sections = SECTIONS;
       } else {
-        // First open after the update: keep a copy of the old history next to the new data.
-        next = migrateOldRow(row);
+        // No new-format data on the server. If an old copy of the app overwrote it,
+        // restore from this device's backup; otherwise this is the first open after the update.
+        const backup = readBackup(user.id);
+        next = backup || migrateOldRow(row);
+        // Keep a copy of the old history next to the new data.
         await supabase
           .from('user_progress')
           .update({ history: { v2: next, v1: row.history || {} }, updated_at: new Date().toISOString() })
@@ -286,6 +481,7 @@ export default function App() {
           })
           .eq('user_id', user.id);
         setSaveStatus(error ? 'error' : 'saved');
+        writeBackup(user.id, data);
       } catch (e) {
         console.error('Failed to save:', e);
         setSaveStatus('error');
@@ -386,8 +582,10 @@ export default function App() {
   const isToday = sel === t;
   const selTasks = activeTasks(c, sel);
   const sections = c.sections || SECTIONS;
+  const horizon = data.horizon || [];
+  const dueItems = horizon.filter((i) => !i.done && i.date <= t);
   const wk = weekStart(sel);
-  const weekly = data.weeks[wk];
+  const weekly = weekItems(data.weeks[wk]);
   const cols = c.length % 15 === 0 || c.length > 60 ? 15 : 10;
 
   // ---- updates ----
@@ -445,15 +643,41 @@ export default function App() {
     img.src = url;
   };
 
-  const saveWeekly = () => {
+  const updateWeek = (fn) => setData((prev) => {
+    const items = fn(weekItems(prev.weeks[wk]));
+    const weeks = { ...prev.weeks };
+    if (items.length) weeks[wk] = { items }; else delete weeks[wk];
+    return { ...prev, weeks };
+  });
+  const addWeekly = () => {
     const label = weeklyDraft.trim();
-    setData((prev) => {
-      const weeks = { ...prev.weeks };
-      if (label) weeks[wk] = { label, done: weeks[wk] && weeks[wk].label === label ? weeks[wk].done : false };
-      else delete weeks[wk];
-      return { ...prev, weeks };
-    });
-    setWeeklyEditing(false);
+    if (!label) return;
+    updateWeek((items) => [...items, { id: uid(), label, done: false }]);
+    setWeeklyDraft('');
+  };
+
+  const updateHorizon = (id, changes) => setData((prev) => ({
+    ...prev,
+    horizon: (prev.horizon || []).map((i) => (i.id === id ? { ...i, ...changes } : i)),
+  }));
+  // A due task becomes a today-only task in the chosen section.
+  const addHorizonToToday = (item, sectionId) => setData((prev) => ({
+    ...prev,
+    challenge: {
+      ...prev.challenge,
+      tasks: [...prev.challenge.tasks, { id: uid(), section: sectionId || sections[0].id, label: item.text, added: t, removed: addDays(t, 1) }],
+    },
+    horizon: (prev.horizon || []).map((i) => (i.id === item.id ? { ...i, done: true } : i)),
+  }));
+
+  const turnOnReminders = async () => {
+    setReminders({ status: 'working', error: '' });
+    try {
+      await enableReminders(user);
+      setReminders({ status: 'on', error: '' });
+    } catch (e) {
+      setReminders({ status: 'off', error: e.message || "Reminders couldn't be turned on." });
+    }
   };
 
   return (
@@ -483,6 +707,8 @@ export default function App() {
             </div>
           </div>
         )}
+
+        <DueCard items={dueItems} today={t} sections={sections} onUpdate={updateHorizon} onAddToToday={addHorizonToToday} />
 
         {finished && (
           <section className="card finished">
@@ -579,33 +805,59 @@ export default function App() {
           </div>
         </section>
 
-        <section className="card weekly" aria-label="Weekly task">
+        <HorizonCard
+          items={horizon}
+          today={t}
+          onAdd={(item) => setData((prev) => ({ ...prev, horizon: [...(prev.horizon || []), item] }))}
+          onRemove={(id) => setData((prev) => ({ ...prev, horizon: (prev.horizon || []).filter((i) => i.id !== id) }))}
+          reminders={reminders}
+          onEnableReminders={turnOnReminders}
+        />
+
+        <section className="card weekly" aria-label="Weekly tasks">
           <div className="weekly-head">
             <div>
               <div className="eyebrow">{wk === weekStart(t) ? 'This week · ' : 'Week of '}{pretty(wk)}</div>
-              <h2 className="eyebrow weekly-title">Weekly task</h2>
+              <h2 className="eyebrow weekly-title">Weekly tasks</h2>
             </div>
-            {!weeklyEditing && (
-              <button className="btn" type="button" onClick={() => { setWeeklyDraft(weekly ? weekly.label : ''); setWeeklyEditing(true); }}>
-                {weekly ? 'Edit' : 'Add'}
-              </button>
-            )}
+            <div className="head-right">
+              {weekly.length > 0 && <span className="count">{weekly.filter((i) => i.done).length}/{weekly.length}</span>}
+              {weekly.length > 0 && (
+                <button className="btn" type="button" onClick={() => setWeeklyEditing(!weeklyEditing)}>{weeklyEditing ? 'Done' : 'Edit'}</button>
+              )}
+            </div>
           </div>
-          {weeklyEditing ? (
-            <div className="edit-row">
-              <input className="text" id="weeklyInput" maxLength={80} autoFocus value={weeklyDraft}
-                placeholder="e.g. Call with brand partner on Tuesday" aria-label="Weekly task"
-                onChange={(e) => setWeeklyDraft(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') saveWeekly(); }} />
-              <button className="btn primary" type="button" onClick={saveWeekly}>Save</button>
-              <button className="btn" type="button" onClick={() => setWeeklyEditing(false)}>Cancel</button>
-            </div>
-          ) : weekly ? (
-            <CheckRow label={weekly.label} checked={!!weekly.done}
-              onToggle={() => setData((prev) => ({ ...prev, weeks: { ...prev.weeks, [wk]: { ...weekly, done: !weekly.done } } }))} />
+
+          {weekly.length > 0 ? (
+            <ul className="weekly-list">
+              {weekly.map((item, i) => (
+                <li key={item.id}>
+                  {weeklyEditing ? (
+                    <div className="row">
+                      <input className="text" id={'weekly-' + item.id} maxLength={80} aria-label={`Weekly task ${i + 1}`} value={item.label}
+                        onChange={(e) => { const v = e.target.value; updateWeek((items) => items.map((x) => (x.id === item.id ? { ...x, label: v } : x))); }}
+                        onBlur={(e) => { if (!e.target.value.trim()) updateWeek((items) => items.filter((x) => x.id !== item.id)); }} />
+                      <button className="icon-btn" type="button" aria-label={`Remove ${item.label}`}
+                        onClick={() => updateWeek((items) => items.filter((x) => x.id !== item.id))}>×</button>
+                    </div>
+                  ) : (
+                    <CheckRow label={item.label} checked={!!item.done}
+                      onToggle={() => updateWeek((items) => items.map((x) => (x.id === item.id ? { ...x, done: !x.done } : x)))} />
+                  )}
+                </li>
+              ))}
+            </ul>
           ) : (
-            <p className="empty">No weekly task set. Use it for one bigger goal, like a collab call or a product launch step.</p>
+            <p className="empty">Nothing for this week yet. Add bigger goals here, like free sample videos or a brand call.</p>
           )}
+
+          <div className="edit-row">
+            <input className="text" id="weeklyInput" maxLength={80} value={weeklyDraft}
+              placeholder="Add a weekly task, e.g. FREE SAMPLE VID - magnesium gummies" aria-label="New weekly task"
+              onChange={(e) => setWeeklyDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') addWeekly(); }} />
+            <button className="btn primary" type="button" onClick={addWeekly} disabled={!weeklyDraft.trim()}>Add</button>
+          </div>
         </section>
 
         <section className="card grid-card" aria-label="All days">
@@ -985,6 +1237,9 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .weekly { padding: 16px 20px; display: grid; gap: 10px; }
 .weekly-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .weekly-title { color: var(--ink); margin-top: 4px; font-size: 13px; }
+.weekly-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.weekly-list .row { flex-wrap: nowrap; }
+.weekly-list .text { flex: 1; min-width: 0; }
 .weekly .task { padding: 6px 0; border: 0; }
 .weekly .task:hover { background: none; }
 .empty { color: var(--muted); margin: 0; font-size: 15px; }
@@ -1064,6 +1319,35 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .auth-form { width: 100%; display: grid; gap: 10px; }
 .or { width: 100%; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
 .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+.kind { flex: none; font: 500 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; padding: 4px 6px; border-radius: 4px; }
+.kind.task { color: var(--accent); background: var(--accent-soft); }
+.kind.schedule { color: var(--partial); border: 1px solid var(--partial); }
+
+.due { padding: 18px 20px; display: grid; gap: 14px; border: 2px solid var(--accent); background: var(--accent-soft); }
+.due h2 { font: 800 26px/1 var(--display); text-transform: uppercase; margin-top: 4px; }
+.due-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.due-item { background: var(--surface); border-radius: 10px; padding: 12px 14px; display: grid; gap: 10px; }
+.due-text { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 17px; }
+.overdue { font: 500 12px var(--mono); color: var(--miss); }
+.due-target { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); }
+.due-target .text { width: auto; padding: 6px 10px; }
+
+.horizon { padding: 18px 20px 20px; display: grid; gap: 14px; }
+.horizon h2 { font: 800 22px/1 var(--display); text-transform: uppercase; margin-top: 4px; }
+.capture { display: grid; gap: 8px; }
+.capture .row { align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 2px; }
+.seg button { border: 0; background: none; padding: 6px 12px; border-radius: 999px; font-weight: 600; font-size: 14px; color: var(--muted); }
+.seg button.on { background: var(--ink); color: var(--surface); }
+.date-small { width: auto; padding: 7px 10px; font-size: 14px; }
+.upcoming { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.upcoming li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.upcoming .when { flex: none; width: 92px; font: 500 12px var(--mono); color: var(--muted); }
+.upcoming .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.upcoming .icon-btn { height: 32px; width: 32px; font-size: 18px; }
+.reminders { display: grid; gap: 6px; justify-items: start; }
+.on-note { margin: 0; color: var(--accent); font-size: 14px; font-weight: 600; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 `;
