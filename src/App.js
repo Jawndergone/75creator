@@ -233,7 +233,7 @@ function DueCard({ items, today, sections, onUpdate, onAddToToday }) {
         {items.map((item) => (
           <li key={item.id} className="due-item">
             <div className="due-text">
-              <span className={'kind ' + item.kind}>{KIND_LABEL[item.kind]}</span>
+              <span className={'kind kind-' + item.kind}>{KIND_LABEL[item.kind]}</span>
               <span>{item.text}</span>
               {item.date < today && <span className="overdue">from {pretty(item.date)}</span>}
             </div>
@@ -268,6 +268,12 @@ function HorizonCard({ items, today, onAdd, onRemove, reminders, onEnableReminde
   const [date, setDate] = useState(addDays(today, 1));
   const upcoming = items.filter((i) => !i.done && i.date > today).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const tomorrow = addDays(today, 1);
+  // Upcoming items grouped by day: [[date, items], ...]
+  const groups = upcoming.reduce((acc, item) => {
+    const last = acc[acc.length - 1];
+    if (last && last[0] === item.date) last[1].push(item); else acc.push([item.date, [item]]);
+    return acc;
+  }, []);
 
   const add = () => {
     const v = text.trim();
@@ -301,16 +307,25 @@ function HorizonCard({ items, today, onAdd, onRemove, reminders, onEnableReminde
       </div>
 
       {upcoming.length ? (
-        <ul className="upcoming">
-          {upcoming.map((item) => (
-            <li key={item.id}>
-              <span className="when">{item.date === tomorrow ? 'Tomorrow' : pretty(item.date)}</span>
-              <span className={'kind ' + item.kind}>{KIND_LABEL[item.kind]}</span>
-              <span className="what">{item.text}</span>
-              <button className="icon-btn" type="button" aria-label={`Remove ${item.text}`} onClick={() => onRemove(item.id)}>×</button>
-            </li>
+        <div className="upcoming">
+          {groups.map(([date, list]) => (
+            <div className="up-group" key={date}>
+              <div className="up-date">
+                {date === tomorrow ? 'Tomorrow' : pretty(date)}
+                <span className="up-count">{list.length}</span>
+              </div>
+              <ul>
+                {list.map((item) => (
+                  <li key={item.id} className="up-item">
+                    <span className={'kind kind-' + item.kind}>{KIND_LABEL[item.kind]}</span>
+                    <span className="what">{item.text}</span>
+                    <button className="up-remove" type="button" aria-label={`Remove ${item.text}`} onClick={() => onRemove(item.id)}>×</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ))}
-        </ul>
+        </div>
       ) : (
         <p className="empty">Nothing on the horizon. Add things you need to task or schedule, and they'll show up at the top of the app on that day.</p>
       )}
@@ -1320,9 +1335,9 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .or { width: 100%; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
 .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 
-.kind { flex: none; font: 500 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; padding: 4px 6px; border-radius: 4px; }
-.kind.task { color: var(--accent); background: var(--accent-soft); }
-.kind.schedule { color: var(--partial); border: 1px solid var(--partial); }
+.kind { flex: none; display: inline-block; white-space: nowrap; font: 500 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; padding: 5px 7px; border-radius: 5px; border: 1px solid transparent; }
+.kind-task { color: var(--accent); background: var(--accent-soft); }
+.kind-schedule { color: var(--partial); border-color: var(--partial); }
 
 .due { padding: 18px 20px; display: grid; gap: 14px; border: 2px solid var(--accent); background: var(--accent-soft); }
 .due h2 { font: 800 26px/1 var(--display); text-transform: uppercase; margin-top: 4px; }
@@ -1341,11 +1356,15 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .seg button { border: 0; background: none; padding: 6px 12px; border-radius: 999px; font-weight: 600; font-size: 14px; color: var(--muted); }
 .seg button.on { background: var(--ink); color: var(--surface); }
 .date-small { width: auto; padding: 7px 10px; font-size: 14px; }
-.upcoming { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
-.upcoming li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
-.upcoming .when { flex: none; width: 92px; font: 500 12px var(--mono); color: var(--muted); }
-.upcoming .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.upcoming .icon-btn { height: 32px; width: 32px; font-size: 18px; }
+.upcoming { display: grid; gap: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.up-group { display: grid; gap: 8px; }
+.up-date { display: flex; align-items: center; gap: 8px; font: 500 11px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.up-count { font-size: 10px; color: var(--ink); border: 1px solid var(--line); border-radius: 99px; padding: 3px 7px; letter-spacing: 0; }
+.up-group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.up-item { display: flex; align-items: center; gap: 12px; padding: 10px 8px 10px 12px; background: var(--ground); border: 1px solid var(--line); border-radius: 10px; }
+.up-item .what { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 15px; line-height: 1.35; }
+.up-remove { flex: none; width: 30px; height: 30px; border: 0; border-radius: 8px; background: none; color: var(--muted); font-size: 18px; line-height: 1; }
+.up-remove:hover { color: var(--miss); background: var(--miss-soft); }
 .reminders { display: grid; gap: 6px; justify-items: start; }
 .on-note { margin: 0; color: var(--accent); font-size: 14px; font-weight: 600; }
 
