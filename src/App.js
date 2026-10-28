@@ -207,7 +207,6 @@ export default function App() {
   useEffect(() => {
     if (user) loadUserProgress();
     else { setIsLoading(false); loadedRef.current = false; setData(null); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   // Roll over to the new day if the app stays open past midnight.
