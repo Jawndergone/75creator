@@ -350,6 +350,67 @@ const CheckIcon = () => (
   </svg>
 );
 
+// ---- times ("14:05" strings, local) ----
+const nowHM = () => { const d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+const splitHM = (hm) => hm.split(':').map(Number);
+const fmtTime = (hm, withMeridiem = true) => {
+  const [h, m] = splitHM(hm);
+  return (h % 12 || 12) + ':' + pad(m) + (withMeridiem ? (h < 12 ? ' AM' : ' PM') : '');
+};
+function timeLabel(time) {
+  if (!time) return '';
+  const { start, end } = time;
+  if (start && end) {
+    const [sh, sm] = splitHM(start);
+    const [eh, em] = splitHM(end);
+    const mins = ((eh * 60 + em) - (sh * 60 + sm) + 1440) % 1440;
+    const dur = mins >= 60 ? Math.floor(mins / 60) + 'h' + (mins % 60 ? ' ' + (mins % 60) + 'm' : '') : mins + 'm';
+    const sameHalf = (sh < 12) === (eh < 12);
+    return fmtTime(start, !sameHalf) + '–' + fmtTime(end) + ' · ' + dur;
+  }
+  if (end) return fmtTime(end);
+  return 'from ' + fmtTime(start);
+}
+
+const ClockIcon = () => (
+  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <circle cx="8" cy="8" r="6.25" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M8 4.75V8l2.25 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+// A checklist row with the time it was done (or a start–end range), editable inline.
+function TaskLine({ task, checked, time, open, onToggle, onOpen, onClose, onSetTime }) {
+  const label = timeLabel(time);
+  return (
+    <li>
+      <div className="task-line">
+        <CheckRow label={task.label} checked={checked} onToggle={onToggle} />
+        <button type="button" className={'time-chip' + (label ? '' : ' empty')} onClick={open ? onClose : onOpen}
+          aria-label={label ? `Edit time for ${task.label}: ${label}` : `Add a time for ${task.label}`} aria-expanded={open}>
+          {label || <ClockIcon />}
+        </button>
+      </div>
+      {open && (
+        <div className="time-edit">
+          <label htmlFor={'start-' + task.id}>Start
+            <input className="text" type="time" id={'start-' + task.id} value={(time && time.start) || ''}
+              onChange={(e) => onSetTime('start', e.target.value)} />
+          </label>
+          <label htmlFor={'end-' + task.id}>End
+            <input className="text" type="time" id={'end-' + task.id} value={(time && time.end) || ''}
+              onChange={(e) => onSetTime('end', e.target.value)} />
+          </label>
+          <div className="row">
+            <button className="btn" type="button" onClick={() => { onSetTime('start', ''); onSetTime('end', ''); }}>Clear</button>
+            <button className="btn primary" type="button" onClick={onClose}>Done</button>
+          </div>
+        </div>
+      )}
+    </li>
+  );
+}
+
 function CheckRow({ label, checked, onToggle }) {
   return (
     <button type="button" className="task" aria-pressed={checked} onClick={onToggle}>
@@ -383,6 +444,7 @@ export default function App() {
   const [selected, setSelected] = useState(todayStr());
   const [setupOpen, setSetupOpen] = useState(false);
   const [editingTasks, setEditingTasks] = useState(false);
+  const [timeOpen, setTimeOpen] = useState(null);
   const [weeklyEditing, setWeeklyEditing] = useState(false);
   const [weeklyDraft, setWeeklyDraft] = useState('');
   const [photoError, setPhotoError] = useState('');
@@ -609,10 +671,28 @@ export default function App() {
     return { ...prev, logs: { ...prev.logs, [date]: fn({ ...cur, done: [...cur.done] }) } };
   });
 
+  // Checking a task today stamps the time it was done; unchecking clears that stamp.
   const toggleTask = (id) => updateLog(sel, (l) => {
+    const times = { ...(l.times || {}) };
     const i = l.done.indexOf(id);
-    if (i >= 0) l.done.splice(i, 1); else l.done.push(id);
-    return l;
+    if (i >= 0) {
+      l.done.splice(i, 1);
+      if (times[id]) {
+        const { end, ...rest } = times[id];
+        if (rest.start) times[id] = rest; else delete times[id];
+      }
+    } else {
+      l.done.push(id);
+      if (sel === t && !(times[id] && times[id].end)) times[id] = { ...(times[id] || {}), end: nowHM() };
+    }
+    return { ...l, times };
+  });
+  const setTaskTime = (id, field, value) => updateLog(sel, (l) => {
+    const times = { ...(l.times || {}) };
+    const cur = { ...(times[id] || {}) };
+    if (value) cur[field] = value; else delete cur[field];
+    if (cur.start || cur.end) times[id] = cur; else delete times[id];
+    return { ...l, times };
   });
 
   const selectDay = (date) => {
@@ -788,9 +868,17 @@ export default function App() {
                   </div>
                   <ul className="tasks">
                     {list.map((task) => (
-                      <li key={task.id}>
-                        <CheckRow label={task.label} checked={log.done.includes(task.id)} onToggle={() => toggleTask(task.id)} />
-                      </li>
+                      <TaskLine
+                        key={task.id}
+                        task={task}
+                        checked={log.done.includes(task.id)}
+                        time={log.times && log.times[task.id]}
+                        open={timeOpen === sel + ':' + task.id}
+                        onToggle={() => toggleTask(task.id)}
+                        onOpen={() => setTimeOpen(sel + ':' + task.id)}
+                        onClose={() => setTimeOpen(null)}
+                        onSetTime={(field, value) => setTaskTime(task.id, field, value)}
+                      />
                     ))}
                   </ul>
                 </div>
@@ -856,8 +944,18 @@ export default function App() {
                         onClick={() => updateWeek((items) => items.filter((x) => x.id !== item.id))}>×</button>
                     </div>
                   ) : (
-                    <CheckRow label={item.label} checked={!!item.done}
-                      onToggle={() => updateWeek((items) => items.map((x) => (x.id === item.id ? { ...x, done: !x.done } : x)))} />
+                    <div className="task-line weekly-line">
+                      <CheckRow label={item.label} checked={!!item.done}
+                        onToggle={() => updateWeek((items) => items.map((x) => {
+                          if (x.id !== item.id) return x;
+                          // Remember when a weekly task was finished.
+                          if (x.done) { const { doneOn, doneAt, ...rest } = x; return { ...rest, done: false }; }
+                          return { ...x, done: true, doneOn: t, doneAt: nowHM() };
+                        }))} />
+                      {item.done && item.doneOn && (
+                        <span className="time-chip static">{pretty(item.doneOn)} · {fmtTime(item.doneAt)}</span>
+                      )}
+                    </div>
                   )}
                 </li>
               ))}
@@ -1242,6 +1340,19 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .task[aria-pressed="true"] .box { background: var(--accent); border-color: var(--accent); }
 .task[aria-pressed="true"] .box svg { opacity: 1; }
 .task[aria-pressed="true"] .label { color: var(--muted); }
+.task-line { display: flex; align-items: center; border-bottom: 1px solid var(--line); }
+.task-line .task { flex: 1; min-width: 0; border-bottom: 0; padding-right: 8px; }
+.time-chip { flex: none; margin-right: 16px; font: 500 12px/1 var(--mono); color: var(--ink); background: var(--ground); border: 1px solid var(--line); border-radius: 99px; padding: 7px 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.time-chip:hover { border-color: var(--muted); }
+.time-chip.empty { color: var(--muted); background: none; border-color: transparent; padding: 7px; opacity: .55; }
+.time-chip.empty:hover, .time-chip.empty[aria-expanded="true"] { opacity: 1; border-color: var(--line); }
+.time-chip svg { width: 15px; height: 15px; display: block; }
+.time-chip.static { margin-right: 0; color: var(--muted); }
+.time-chip.static:hover { border-color: var(--line); }
+.time-edit { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; padding: 12px 20px 14px 60px; background: var(--ground); border-bottom: 1px solid var(--line); }
+.time-edit label { display: grid; gap: 6px; font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.time-edit .text { width: auto; padding: 7px 10px; font: 400 15px/1.2 var(--body); background: var(--surface); text-transform: none; letter-spacing: 0; color: var(--ink); }
+.weekly-line { border-bottom: 0; }
 .note { padding: 14px 20px 18px; display: grid; gap: 6px; }
 .note textarea { width: 100%; min-height: 64px; resize: vertical; border: 1px solid var(--line); border-radius: 10px; background: var(--ground); padding: 10px 12px; font-size: 16px; }
 .photo { padding: 0 20px 18px; display: grid; gap: 10px; }
