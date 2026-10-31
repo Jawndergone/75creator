@@ -588,6 +588,14 @@ function timeLabel(time) {
   return 'from ' + fmtTime(start);
 }
 
+const GearIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M12 15.25a3.25 3.25 0 1 0 0-6.5 3.25 3.25 0 0 0 0 6.5Z" stroke="currentColor" strokeWidth="1.7" />
+    <path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.55-2-3.46-2.36.95a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.44 2.44a7.5 7.5 0 0 0-2.6 1.5L4.6 5.49l-2 3.46 2 1.55a7.6 7.6 0 0 0 0 3l-2 1.55 2 3.46 2.36-.95a7.5 7.5 0 0 0 2.6 1.5L10 21.5h4l.44-2.44a7.5 7.5 0 0 0 2.6-1.5l2.36.95 2-3.46-2-1.55Z"
+      stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+  </svg>
+);
+
 const ClockIcon = () => (
   <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
     <circle cx="8" cy="8" r="6.25" stroke="currentColor" strokeWidth="1.5" />
@@ -662,6 +670,20 @@ export default function App() {
   const [editingTasks, setEditingTasks] = useState(false);
   const [timeOpen, setTimeOpen] = useState(null);
   const [activeTab, setActiveTab] = useState('main');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const closeRef = useRef(null);
+  const closeSettings = () => { setSettingsOpen(false); setSetupOpen(false); };
+
+  // While settings are open: lock page scroll, focus the close button, close on Escape.
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onKey = (e) => { if (e.key === 'Escape') { setSettingsOpen(false); setSetupOpen(false); } };
+    document.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    if (closeRef.current) closeRef.current.focus();
+    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = prevOverflow; };
+  }, [settingsOpen]);
   const [weeklyEditing, setWeeklyEditing] = useState(false);
   const [weeklyDraft, setWeeklyDraft] = useState('');
   const [reminders, setReminders] = useState({ status: 'off', error: '' });
@@ -986,7 +1008,9 @@ export default function App() {
             <Logo />
             {c.name !== '75 Creator' && <h1 className="challenge-name">{c.name}</h1>}
           </div>
-          <button className="btn" type="button" onClick={() => setSetupOpen(true)}>Edit challenge</button>
+          <button className="gear" type="button" aria-label="Settings" aria-haspopup="dialog" onClick={() => setSettingsOpen(true)}>
+            <GearIcon />
+          </button>
         </header>
 
         <nav className="tabs" aria-label="Task tabs">
@@ -1019,8 +1043,6 @@ export default function App() {
           </div>
         )}
 
-        {isMain && <DueCard items={dueItems} today={t} sections={sections} onUpdate={updateHorizon} onAddToToday={addHorizonToToday} />}
-
         {isMain && finished && (
           <section className="card finished">
             <div className="eyebrow">Challenge complete</div>
@@ -1030,24 +1052,17 @@ export default function App() {
         )}
 
         {isMain && (
-        <section className="card score" aria-label="Progress">
-          <div className="score-top">
-            <div>
-              <div className="eyebrow">{t < c.start ? 'Starts ' + pretty(c.start) : 'Day'}</div>
-              <div className="daynum">{day}<small>/{c.length}</small></div>
-            </div>
-            <div className="stats">
-              <div className="stat"><span className="eyebrow">Streak</span><b>{streak(data, t)}</b></div>
-              <div className="stat"><span className="eyebrow">Days done</span><b>{done}</b></div>
-              <div className="stat"><span className="eyebrow">Restarts</span><b>{data.attempts.length}</b></div>
-            </div>
-          </div>
-          <div className="rail" aria-hidden="true"><i style={{ width: (100 * done / c.length).toFixed(1) + '%' }} /></div>
-          <p className="rule">
-            {c.rule === 'strict'
-              ? 'Hard rules: miss a day and you restart at Day 1.'
-              : `Grace days: ${Math.min(missesSoFar(data, t), c.grace)} of ${c.grace} used. Miss more and you restart.`}
-          </p>
+        <section className="daybar" aria-label="Progress"
+          title={c.rule === 'strict' ? 'Hard rules: miss a day and you restart at Day 1.' : `Grace days: ${Math.min(missesSoFar(data, t), c.grace)} of ${c.grace} used.`}>
+          <span className="daybar-day">
+            {t < c.start ? <>Starts {pretty(c.start)}</> : <>Day <b>{day}</b><span>/{c.length}</span></>}
+          </span>
+          <span className="rail" aria-hidden="true"><i style={{ width: (100 * done / c.length).toFixed(1) + '%' }} /></span>
+          <span className="daybar-stats">
+            <span>Streak <b>{streak(data, t)}</b></span>
+            <span>Done <b>{done}</b></span>
+            <span>Restarts <b>{data.attempts.length}</b></span>
+          </span>
         </section>
         )}
 
@@ -1061,9 +1076,11 @@ export default function App() {
             </div>
             <div className="head-right">
               {!editingTasks && <span className="count">{tabDone} / {tabTotal} done</span>}
-              <button className="btn" type="button" onClick={() => { setEditingTasks(!editingTasks); setSelected(t); }}>
-                {editingTasks ? 'Done' : 'Edit tasks'}
-              </button>
+              {editingTasks ? (
+                <button className="btn primary" type="button" onClick={() => setEditingTasks(false)}>Done</button>
+              ) : !isToday && (
+                <button className="btn" type="button" onClick={() => setSelected(t)}>Back to today</button>
+              )}
             </div>
           </div>
           {editingTasks ? (
@@ -1116,46 +1133,11 @@ export default function App() {
           dateLabel={isToday ? 'Today · ' + pretty(sel) : pretty(sel)}
           onSave={(note) => updateLog(sel, (l) => ({ ...l, note }))}
         />
-
-        <section className="card grid-card" aria-label="All days">
-          <div>
-            <div className="eyebrow">Tap a past day to edit it</div>
-            <h2>All {c.length} days</h2>
-          </div>
-          <div className="days" style={{ gridTemplateColumns: `repeat(${Math.min(cols, c.length)}, minmax(0, 1fr))` }}>
-            {Array.from({ length: c.length }, (_, i) => {
-              const d = addDays(c.start, i);
-              const st = cellState(data, d, t);
-              return (
-                <button key={d} type="button" disabled={st === 'future'} onClick={() => selectDay(d)}
-                  className={`cell ${st}${d === t ? ' is-today' : ''}${d === sel ? ' selected' : ''}`}
-                  aria-label={`Day ${i + 1}, ${pretty(d)}, ${{ done: 'complete', open: 'in progress', missed: 'missed', future: 'upcoming' }[st]}`}>
-                  {i + 1}
-                </button>
-              );
-            })}
-          </div>
-          <div className="legend">
-            <span><i className="l-done" />Complete</span>
-            <span><i className="l-open" />In progress</span>
-            <span><i className="l-miss" />Missed</span>
-            <span><i />Upcoming</span>
-          </div>
-        </section>
-
-        {data.attempts.length > 0 && (
-          <section className="card history">
-            <div className="eyebrow">Past attempts</div>
-            <ol>
-              {data.attempts.map((a, i) => (
-                <li key={i}>{pretty(a.start)} to {pretty(a.end)}: reached Day {a.reached} of {a.length}</li>
-              ))}
-            </ol>
-          </section>
-        )}
         </>)}
 
         {tab === cardTab && (<>
+        <DueCard items={dueItems} today={t} sections={sections} onUpdate={updateHorizon} onAddToToday={addHorizonToToday} />
+
         <HorizonCard
           items={horizon}
           today={t}
@@ -1224,21 +1206,100 @@ export default function App() {
         </section>
         </>)}
 
-        {setupOpen && (
-          <Setup
-            data={data}
-            today={t}
-            onCancel={() => setSetupOpen(false)}
-            onSave={(changes) => { setData((prev) => ({ ...prev, challenge: { ...prev.challenge, ...changes } })); setSelected(t); setSetupOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-            onReset={() => { setData((prev) => ({ ...freshData(t), challenge: { ...prev.challenge, start: t } })); setSelected(t); setSetupOpen(false); }}
-          />
+        {saveStatus === 'error' && (
+          <p className="foot err">Couldn't save. Check your connection; your changes will retry on your next tap.</p>
         )}
 
-        <p className="foot">
-          {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'error' ? "Couldn't save. Check your connection; changes will retry on your next tap." : 'Saved to your account'}
-          {' · '}
-          <button type="button" className="link" onClick={handleSignOut}>Sign out</button>
-        </p>
+        {settingsOpen && (
+          <div className="sheet-backdrop" onClick={closeSettings}>
+            <aside className="sheet" role="dialog" aria-modal="true" aria-label="Settings" onClick={(e) => e.stopPropagation()}>
+              <div className="sheet-head">
+                {setupOpen
+                  ? <button className="link back" type="button" onClick={() => setSetupOpen(false)}>‹ Settings</button>
+                  : <h2>Settings</h2>}
+                <button className="icon-btn" type="button" ref={closeRef} aria-label="Close settings" onClick={closeSettings}>×</button>
+              </div>
+
+              {setupOpen ? (
+                <Setup
+                  data={data}
+                  today={t}
+                  onCancel={() => setSetupOpen(false)}
+                  onSave={(changes) => { setData((prev) => ({ ...prev, challenge: { ...prev.challenge, ...changes } })); setSelected(t); closeSettings(); }}
+                  onReset={() => { setData((prev) => ({ ...freshData(t), challenge: { ...prev.challenge, start: t } })); setSelected(t); closeSettings(); }}
+                />
+              ) : (<>
+                <section className="sheet-group">
+                  <div className="eyebrow">Account</div>
+                  <div className="account-row">
+                    <div>
+                      <b>{user.email}</b>
+                      <span className="hint">
+                        {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'error' ? "Couldn't save. Check your connection." : 'All changes saved'}
+                      </span>
+                    </div>
+                    <button className="btn" type="button" onClick={handleSignOut}>Sign out</button>
+                  </div>
+                </section>
+
+                <section className="sheet-group">
+                  <div className="eyebrow">Challenge</div>
+                  <button className="menu-item" type="button"
+                    onClick={() => { closeSettings(); setEditingTasks(true); setSelected(t); window.scrollTo({ top: 0 }); }}>
+                    <b>Edit tasks</b>
+                    <span className="sub">Add, rename or move tasks and sections on the {tabs.find((x) => x.id === tab).label} tab</span>
+                    <span className="chev" aria-hidden="true">›</span>
+                  </button>
+                  <button className="menu-item" type="button" onClick={() => setSetupOpen(true)}>
+                    <b>Edit challenge</b>
+                    <span className="sub">Name, length, missed-day rules and start date</span>
+                    <span className="chev" aria-hidden="true">›</span>
+                  </button>
+                </section>
+
+                <section className="sheet-group">
+                  <div className="eyebrow">History</div>
+            <section className="card grid-card" aria-label="All days">
+              <div>
+                <div className="eyebrow">Tap a day to view or edit it</div>
+                <h2>All {c.length} days</h2>
+              </div>
+              <div className="days" style={{ gridTemplateColumns: `repeat(${Math.min(cols, c.length)}, minmax(0, 1fr))` }}>
+                {Array.from({ length: c.length }, (_, i) => {
+                  const d = addDays(c.start, i);
+                  const st = cellState(data, d, t);
+                  return (
+                    <button key={d} type="button" disabled={st === 'future'} onClick={() => { closeSettings(); selectDay(d); }}
+                      className={`cell ${st}${d === t ? ' is-today' : ''}${d === sel ? ' selected' : ''}`}
+                      aria-label={`Day ${i + 1}, ${pretty(d)}, ${{ done: 'complete', open: 'in progress', missed: 'missed', future: 'upcoming' }[st]}`}>
+                      {i + 1}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="legend">
+                <span><i className="l-done" />Complete</span>
+                <span><i className="l-open" />In progress</span>
+                <span><i className="l-miss" />Missed</span>
+                <span><i />Upcoming</span>
+              </div>
+            </section>
+
+            {data.attempts.length > 0 && (
+              <section className="card history">
+                <div className="eyebrow">Past attempts</div>
+                <ol>
+                  {data.attempts.map((a, i) => (
+                    <li key={i}>{pretty(a.start)} to {pretty(a.end)}: reached Day {a.reached} of {a.length}</li>
+                  ))}
+                </ol>
+              </section>
+            )}
+                </section>
+              </>)}
+            </aside>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1548,15 +1609,43 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .finished h2 { font: 900 36px/1 var(--display); text-transform: uppercase; }
 .finished p { margin: 0; }
 
-.score { padding: 20px 20px 18px; display: grid; gap: 16px; }
-.score-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.daynum { font: 900 clamp(96px, 30vw, 156px)/.8 var(--display); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
-.daynum small { font-size: .32em; color: var(--muted); font-weight: 700; margin-left: 4px; }
-.stats { display: grid; grid-template-columns: repeat(3, auto); gap: 6px 22px; }
-.stat b { display: block; font: 800 34px/1 var(--display); font-variant-numeric: tabular-nums; margin-top: 4px; }
+header { align-items: center; }
+.gear { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.gear:hover { border-color: var(--muted); }
+.gear svg { width: 21px; height: 21px; }
+
+.sheet-backdrop { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: flex-end; background: rgba(4, 7, 12, .6); }
+.sheet {
+  width: min(440px, 100%); height: 100%; overflow-y: auto; overscroll-behavior: contain;
+  display: grid; align-content: start; gap: 24px;
+  background: var(--ground); border-left: 1px solid var(--line);
+  padding: calc(18px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) calc(32px + env(safe-area-inset-bottom, 0px)) 16px;
+}
+.sheet-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.sheet-head h2 { font: 800 28px/1 var(--display); text-transform: uppercase; }
+.sheet-head .icon-btn { height: 40px; width: 40px; font-size: 22px; }
+.back { font-weight: 600; text-decoration: none; color: var(--ink); font-size: 16px; }
+.sheet-group { display: grid; gap: 10px; }
+.account-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.account-row b { display: block; overflow-wrap: anywhere; font-weight: 600; }
+.account-row .hint { display: block; margin-top: 2px; }
+.menu-item { display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; text-align: left; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.menu-item:hover { border-color: var(--muted); }
+.menu-item b { font-weight: 600; }
+.menu-item .sub { grid-column: 1; color: var(--muted); font-size: 14px; }
+.menu-item .chev { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: var(--muted); font-size: 22px; }
+.sheet .grid-card { padding: 16px; }
+.foot.err { color: var(--miss); }
+
+.daybar { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.daybar-day { font: 800 20px/1 var(--display); text-transform: uppercase; letter-spacing: .02em; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.daybar-day b { font-weight: 900; }
+.daybar-day span { color: var(--muted); font-weight: 700; }
+.daybar .rail { flex: 1 1 120px; height: 6px; }
+.daybar-stats { display: flex; gap: 14px; font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); white-space: nowrap; }
+.daybar-stats b { color: var(--ink); font-size: 13px; margin-left: 3px; font-variant-numeric: tabular-nums; }
 .rail { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
 .rail i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .4s ease; }
-.rule { margin: 0; color: var(--muted); font-size: 14px; }
 
 .today { overflow: hidden; scroll-margin-top: 16px; }
 .today-head { padding: 16px 20px 12px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
