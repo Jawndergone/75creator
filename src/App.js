@@ -26,6 +26,29 @@ const DEFAULT_TASKS = [
 ];
 const OLD_TASK_IDS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
 
+// Sections live on the main Accounts tab unless they're set to have their own tab.
+const OWN_TAB_DEFAULTS = ['content', 'health', 'personal'];
+// Sections made before tab choices existed start where they belong by name.
+const LABEL_TAB_DEFAULTS = { breaks: 'health', 'free samples': 'content' };
+// A section's tab setting: 'main', 'own', or the id of a section that has its own tab.
+const tabSetting = (s) => {
+  if (s.tab) return s.tab;
+  if (s.ownTab !== undefined) return s.ownTab ? 'own' : 'main';
+  if (OWN_TAB_DEFAULTS.includes(s.id)) return 'own';
+  return LABEL_TAB_DEFAULTS[(s.label || '').trim().toLowerCase()] || 'main';
+};
+const hasOwnTab = (s) => tabSetting(s) === 'own';
+// The tab a section shows on; falls back to Accounts if the tab it joined is gone.
+const tabOf = (s, sections) => {
+  const setting = tabSetting(s);
+  if (setting === 'own') return s.id;
+  if (setting === 'main') return 'main';
+  const owner = sections.find((x) => x.id === setting);
+  return owner && hasOwnTab(owner) ? setting : 'main';
+};
+// Brand deals and weekly tasks live on 30K Months when that tab exists.
+const CARD_TAB = 'content';
+
 const sectionOf = (task, sections) =>
   sections.some((s) => s.id === task.section) ? task.section : sections[0].id;
 
@@ -119,6 +142,7 @@ function freshData(start) {
     attempts: [],
     weeks: {},
     horizon: [],
+    deals: [],
   };
 }
 
@@ -218,6 +242,201 @@ async function enableReminders(user) {
 
 const KIND_LABEL = { task: 'Task', schedule: 'Schedule' };
 
+// The day's notes: write, then Save; saved notes show as text until you tap Edit.
+function NotesCard({ note, dateLabel, onSave }) {
+  const [editing, setEditing] = useState(!note);
+  const [draft, setDraft] = useState(note);
+  const changed = draft !== note;
+
+  const save = () => {
+    onSave(draft.trim() ? draft : '');
+    setEditing(!draft.trim());
+  };
+
+  return (
+    <section className="card notes" aria-label="Notes">
+      <div className="notes-head">
+        <div>
+          <div className="eyebrow">{dateLabel}</div>
+          <h2>Notes</h2>
+        </div>
+        {!editing && <button className="btn" type="button" onClick={() => setEditing(true)}>Edit</button>}
+      </div>
+      {editing ? (
+        <>
+          <textarea className="text" id="note" value={draft} aria-label="Notes for this day"
+            placeholder="Challenges, insights, breakthroughs, or anything you want to remember."
+            onChange={(e) => setDraft(e.target.value)} />
+          <div className="row notes-actions">
+            <button className="btn primary" type="button" onClick={save} disabled={!changed}>Save</button>
+            {note && (
+              <button className="btn" type="button" onClick={() => { setDraft(note); setEditing(false); }}>Cancel</button>
+            )}
+            {changed && <span className="hint">Not saved yet</span>}
+          </div>
+        </>
+      ) : (
+        <p className="note-text">{note}</p>
+      )}
+    </section>
+  );
+}
+
+// ---- brand deals ----
+const DEAL_STATUS = [
+  { id: 'active', label: 'In progress' },
+  { id: 'posted', label: 'Posted' },
+  { id: 'paid', label: 'Paid' },
+];
+const money = (n) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+const parseMoney = (s) => { const n = parseFloat(String(s).replace(/[^0-9.]/g, '')); return isNaN(n) ? null : n; };
+
+function dueText(deal, today) {
+  if (!deal.due) return null;
+  if (deal.status === 'paid') return { text: 'Paid', tone: '' };
+  if (deal.status === 'active' && deal.due < today) return { text: 'Overdue · ' + pretty(deal.due), tone: 'late' };
+  if (deal.due === today) return { text: 'Due today', tone: 'soon' };
+  if (deal.due === addDays(today, 1)) return { text: 'Due tomorrow', tone: 'soon' };
+  return { text: 'Due ' + pretty(deal.due), tone: '' };
+}
+
+function DealEditor({ deal, onUpdate, onRemove, onClose }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const id = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(id);
+  }, [armed]);
+  return (
+    <div className="deal-edit">
+      <div className="deal-fields">
+        <label htmlFor={'brand-' + deal.id}>Brand
+          <input className="text" id={'brand-' + deal.id} maxLength={50} value={deal.brand}
+            onChange={(e) => onUpdate({ brand: e.target.value })} />
+        </label>
+        <label htmlFor={'what-' + deal.id}>Deliverable
+          <input className="text" id={'what-' + deal.id} maxLength={80} value={deal.what || ''} placeholder="e.g. 2 TikToks + 1 story"
+            onChange={(e) => onUpdate({ what: e.target.value })} />
+        </label>
+        <label htmlFor={'amount-' + deal.id}>Payment
+          <input className="text" id={'amount-' + deal.id} inputMode="decimal" placeholder="$0" value={deal.amount == null ? '' : deal.amount}
+            onChange={(e) => onUpdate({ amount: e.target.value === '' ? null : parseMoney(e.target.value) })} />
+        </label>
+        <label htmlFor={'due-' + deal.id}>Due
+          <input className="text" type="date" id={'due-' + deal.id} value={deal.due || ''}
+            onChange={(e) => onUpdate({ due: e.target.value || null })} />
+        </label>
+      </div>
+      <div className="seg" role="radiogroup" aria-label="Status">
+        {DEAL_STATUS.map((s) => (
+          <button key={s.id} type="button" role="radio" aria-checked={deal.status === s.id}
+            className={deal.status === s.id ? 'on' : ''} onClick={() => onUpdate({ status: s.id })}>{s.label}</button>
+        ))}
+      </div>
+      <label className="deal-notes" htmlFor={'notes-' + deal.id}>Notes
+        <textarea className="text" id={'notes-' + deal.id} value={deal.notes || ''}
+          placeholder="Contact, usage rights, discount code, anything to remember"
+          onChange={(e) => onUpdate({ notes: e.target.value })} />
+      </label>
+      <div className="actions">
+        <button className="btn primary" type="button" onClick={onClose}>Done</button>
+        <button className={'btn danger' + (armed ? ' armed' : '')} type="button"
+          onClick={() => { if (armed) onRemove(); else setArmed(true); }}>
+          {armed ? 'Tap again to delete' : 'Delete deal'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DealsCard({ deals, today, onChange }) {
+  const [brand, setBrand] = useState('');
+  const [what, setWhat] = useState('');
+  const [amount, setAmount] = useState('');
+  const [due, setDue] = useState('');
+  const [openId, setOpenId] = useState(null);
+  const [showPaid, setShowPaid] = useState(false);
+
+  const byDue = (a, b) => (a.due || '9999') < (b.due || '9999') ? -1 : (a.due || '9999') > (b.due || '9999') ? 1 : 0;
+  const open = deals.filter((d) => d.status !== 'paid').sort((a, b) => (a.status === b.status ? byDue(a, b) : a.status === 'active' ? -1 : 1));
+  const paid = deals.filter((d) => d.status === 'paid');
+  const openTotal = open.reduce((sum, d) => sum + (d.amount || 0), 0);
+  const paidTotal = paid.reduce((sum, d) => sum + (d.amount || 0), 0);
+
+  const add = () => {
+    const b = brand.trim();
+    if (!b) return;
+    onChange([...deals, { id: uid(), brand: b, what: what.trim(), amount: parseMoney(amount), due: due || null, status: 'active', notes: '', created: today }]);
+    setBrand(''); setWhat(''); setAmount(''); setDue('');
+  };
+  const update = (id, changes) => onChange(deals.map((d) => (d.id === id ? { ...d, ...changes } : d)));
+  const remove = (id) => { onChange(deals.filter((d) => d.id !== id)); setOpenId(null); };
+
+  const row = (deal) => {
+    const d = dueText(deal, today);
+    const isOpen = openId === deal.id;
+    return (
+      <li key={deal.id} className={'deal' + (isOpen ? ' open' : '')}>
+        <button type="button" className="deal-row" aria-expanded={isOpen} onClick={() => setOpenId(isOpen ? null : deal.id)}>
+          <span className="deal-main">
+            <span className="deal-brand">{deal.brand || 'Untitled brand'}</span>
+            {deal.what && <span className="deal-what">{deal.what}</span>}
+          </span>
+          <span className="deal-meta">
+            {deal.amount != null && <span className="deal-amount">{money(deal.amount)}</span>}
+            <span className={'deal-status s-' + deal.status}>{DEAL_STATUS.find((s) => s.id === deal.status).label}</span>
+            {d && deal.status !== 'paid' && <span className={'deal-due ' + d.tone}>{d.text}</span>}
+          </span>
+        </button>
+        {isOpen && <DealEditor deal={deal} onUpdate={(c) => update(deal.id, c)} onRemove={() => remove(deal.id)} onClose={() => setOpenId(null)} />}
+      </li>
+    );
+  };
+
+  return (
+    <section className="card deals" aria-label="Active brand deals">
+      <div className="deals-head">
+        <div>
+          <div className="eyebrow">Business</div>
+          <h2>Active Brand Deals</h2>
+        </div>
+        {open.length > 0 && (
+          <div className="deals-total">
+            <b>{money(openTotal)}</b>
+            <span className="eyebrow">{open.length === 1 ? '1 open deal' : `${open.length} open deals`}</span>
+          </div>
+        )}
+      </div>
+
+      {open.length ? <ul className="deal-list">{open.map(row)}</ul> : (
+        <p className="empty">No active deals. Add one below when a brand says yes.</p>
+      )}
+
+      <div className="deal-add">
+        <input className="text" id="dealBrand" maxLength={50} placeholder="Brand" aria-label="Brand"
+          value={brand} onChange={(e) => setBrand(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') add(); }} />
+        <input className="text" id="dealWhat" maxLength={80} placeholder="Deliverable, e.g. 2 TikToks" aria-label="Deliverable"
+          value={what} onChange={(e) => setWhat(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') add(); }} />
+        <div className="row">
+          <input className="text deal-amt" id="dealAmount" inputMode="decimal" placeholder="$ Payment" aria-label="Payment"
+            value={amount} onChange={(e) => setAmount(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') add(); }} />
+          <input className="text date-small" id="dealDue" type="date" aria-label="Due date" value={due} onChange={(e) => setDue(e.target.value)} />
+          <button className="btn primary" type="button" onClick={add} disabled={!brand.trim()}>Add deal</button>
+        </div>
+      </div>
+
+      {paid.length > 0 && (
+        <div className="deal-paid">
+          <button type="button" className="link" aria-expanded={showPaid} onClick={() => setShowPaid(!showPaid)}>
+            {showPaid ? 'Hide' : 'Show'} completed ({paid.length}{paidTotal ? ' · ' + money(paidTotal) + ' earned' : ''})
+          </button>
+          {showPaid && <ul className="deal-list">{paid.map(row)}</ul>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 // Horizon items whose day has come: highlighted at the top until handled.
 function DueCard({ items, today, sections, onUpdate, onAddToToday }) {
   const [target, setTarget] = useState(sections[0] ? sections[0].id : '');
@@ -283,11 +502,8 @@ function HorizonCard({ items, today, onAdd, onRemove, reminders, onEnableReminde
   };
 
   return (
-    <section className="card horizon" aria-label="On the horizon">
-      <div>
-        <div className="eyebrow">Capture for later</div>
-        <h2>On the horizon</h2>
-      </div>
+    <section className="card horizon" aria-label="Pending tasks">
+      <h2>Pending Tasks</h2>
       <div className="capture">
         <input className="text" id="horizonText" maxLength={100} value={text} placeholder="Something to task or schedule"
           aria-label="Something to task or schedule" onChange={(e) => setText(e.target.value)}
@@ -445,9 +661,9 @@ export default function App() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [editingTasks, setEditingTasks] = useState(false);
   const [timeOpen, setTimeOpen] = useState(null);
+  const [activeTab, setActiveTab] = useState('main');
   const [weeklyEditing, setWeeklyEditing] = useState(false);
   const [weeklyDraft, setWeeklyDraft] = useState('');
-  const [photoError, setPhotoError] = useState('');
   const [reminders, setReminders] = useState({ status: 'off', error: '' });
   const loadedRef = useRef(false);
   const checklistRef = useRef(null);
@@ -520,6 +736,7 @@ export default function App() {
         if (!next.weeks) next.weeks = {};
         if (!next.attempts) next.attempts = [];
         if (!next.horizon) next.horizon = [];
+        if (!next.deals) next.deals = [];
         if (!next.challenge.sections) next.challenge.sections = SECTIONS;
       } else {
         // No new-format data on the server. If an old copy of the app overwrote it,
@@ -659,6 +876,18 @@ export default function App() {
   const isToday = sel === t;
   const selTasks = activeTasks(c, sel);
   const sections = c.sections || SECTIONS;
+  const tabs = [{ id: 'main', label: 'Accounts' }, ...sections.filter(hasOwnTab).map((s) => ({ id: s.id, label: s.label }))];
+  const tab = tabs.some((x) => x.id === activeTab) ? activeTab : 'main';
+  const isMain = tab === 'main';
+  const tabSections = sections.filter((s) => tabOf(s, sections) === tab);
+  const cardTab = tabs.some((x) => x.id === CARD_TAB) ? CARD_TAB : 'main';
+  // [done, total] for a tab on the selected day.
+  const tabCount = (id) => {
+    const ids = sections.filter((s) => tabOf(s, sections) === id).map((s) => s.id);
+    const list = selTasks.filter((x) => ids.includes(sectionOf(x, sections)));
+    return [list.filter((x) => log.done.includes(x.id)).length, list.length];
+  };
+  const [tabDone, tabTotal] = tabCount(tab);
   const horizon = data.horizon || [];
   const dueItems = horizon.filter((i) => !i.done && i.date <= t);
   const wk = weekStart(sel);
@@ -697,7 +926,6 @@ export default function App() {
 
   const selectDay = (date) => {
     setSelected(date);
-    setPhotoError('');
     setWeeklyEditing(false);
     if (checklistRef.current) checklistRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
@@ -710,32 +938,6 @@ export default function App() {
       challenge: { ...prev.challenge, start: t },
     }));
     setSelected(t);
-  };
-
-  // Photos are shrunk before saving so they don't slow down syncing.
-  const handlePhoto = (e) => {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = '';
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      const max = 640;
-      const scale = Math.min(1, max / Math.max(img.width, img.height));
-      const cv = document.createElement('canvas');
-      cv.width = Math.round(img.width * scale);
-      cv.height = Math.round(img.height * scale);
-      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-      URL.revokeObjectURL(url);
-      const photo = cv.toDataURL('image/jpeg', 0.7);
-      setPhotoError('');
-      updateLog(sel, (l) => ({ ...l, photo }));
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      setPhotoError("That file couldn't be opened as an image. Try a JPG or PNG.");
-    };
-    img.src = url;
   };
 
   const updateWeek = (fn) => setData((prev) => {
@@ -787,6 +989,20 @@ export default function App() {
           <button className="btn" type="button" onClick={() => setSetupOpen(true)}>Edit challenge</button>
         </header>
 
+        <nav className="tabs" aria-label="Task tabs">
+          {tabs.map((x) => {
+            const [n, total] = tabCount(x.id);
+            return (
+              <button key={x.id} type="button" aria-current={x.id === tab ? 'page' : undefined}
+                className={'tab' + (x.id === tab ? ' on' : '') + (total && n === total ? ' complete' : '')}
+                onClick={() => { setActiveTab(x.id); setTimeOpen(null); window.scrollTo({ top: 0 }); }}>
+                <span>{x.label}</span>
+                {total > 0 && <span className="tab-count">{n}/{total}</span>}
+              </button>
+            );
+          })}
+        </nav>
+
         {fail && (
           <div className="banner fail">
             <p>
@@ -803,9 +1019,9 @@ export default function App() {
           </div>
         )}
 
-        <DueCard items={dueItems} today={t} sections={sections} onUpdate={updateHorizon} onAddToToday={addHorizonToToday} />
+        {isMain && <DueCard items={dueItems} today={t} sections={sections} onUpdate={updateHorizon} onAddToToday={addHorizonToToday} />}
 
-        {finished && (
+        {isMain && finished && (
           <section className="card finished">
             <div className="eyebrow">Challenge complete</div>
             <h2>All {c.length} days done</h2>
@@ -813,6 +1029,7 @@ export default function App() {
           </section>
         )}
 
+        {isMain && (
         <section className="card score" aria-label="Progress">
           <div className="score-top">
             <div>
@@ -832,6 +1049,7 @@ export default function App() {
               : `Grace days: ${Math.min(missesSoFar(data, t), c.grace)} of ${c.grace} used. Miss more and you restart.`}
           </p>
         </section>
+        )}
 
         <section className="card today" aria-label="Checklist" ref={checklistRef}>
           <div className="today-head">
@@ -839,10 +1057,10 @@ export default function App() {
               <div className="eyebrow">
                 {isToday ? `Day ${dayOf(c, sel)} · ${pretty(sel)}` : `${pretty(sel)} · editing a past day`}
               </div>
-              <h2>{isToday ? 'Today' : `Day ${dayOf(c, sel)}`}</h2>
+              <h2>{isMain ? (isToday ? 'Today' : `Day ${dayOf(c, sel)}`) : tabs.find((x) => x.id === tab).label}</h2>
             </div>
             <div className="head-right">
-              {!editingTasks && <span className="count">{doneCount(data, sel)} / {selTasks.length} done</span>}
+              {!editingTasks && <span className="count">{tabDone} / {tabTotal} done</span>}
               <button className="btn" type="button" onClick={() => { setEditingTasks(!editingTasks); setSelected(t); }}>
                 {editingTasks ? 'Done' : 'Edit tasks'}
               </button>
@@ -852,11 +1070,15 @@ export default function App() {
             <TaskEditor
               tasks={c.tasks}
               sections={sections}
+              shown={tabSections}
+              tabId={tab}
               today={t}
               onChange={(changes) => setData((prev) => ({ ...prev, challenge: { ...prev.challenge, ...changes } }))}
             />
+          ) : tabTotal === 0 ? (
+            <p className="empty tab-empty">No tasks on this tab yet. Tap Edit tasks to add some.</p>
           ) : (
-            sections.map((s) => {
+            tabSections.map((s) => {
               const list = selTasks.filter((x) => sectionOf(x, sections) === s.id);
               if (!list.length) return null;
               const n = list.filter((x) => log.done.includes(x.id)).length;
@@ -885,29 +1107,55 @@ export default function App() {
               );
             })
           )}
-          <div className="note">
-            <label className="eyebrow" htmlFor="note">Note for this day</label>
-            <textarea id="note" placeholder="Make notes of any challenges, insights, or breakthroughs."
-              value={log.note || ''} onChange={(e) => { const v = e.target.value; updateLog(sel, (l) => ({ ...l, note: v })); }} />
+        </section>
+
+        {isMain && (<>
+        <NotesCard
+          key={sel}
+          note={log.note || ''}
+          dateLabel={isToday ? 'Today · ' + pretty(sel) : pretty(sel)}
+          onSave={(note) => updateLog(sel, (l) => ({ ...l, note }))}
+        />
+
+        <section className="card grid-card" aria-label="All days">
+          <div>
+            <div className="eyebrow">Tap a past day to edit it</div>
+            <h2>All {c.length} days</h2>
           </div>
-          <div className="photo">
-            <span className="eyebrow">Progress photo</span>
-            {log.photo && <img src={log.photo} alt="Progress for this day" />}
-            <div className="row">
-              <label className="btn file-btn">
-                {log.photo ? 'Replace photo' : 'Add photo'}
-                <input type="file" id="photoInput" accept="image/*" onChange={handlePhoto} />
-              </label>
-              {log.photo && (
-                <button className="btn" type="button" onClick={() => updateLog(sel, (l) => { const n = { ...l }; delete n.photo; return n; })}>
-                  Remove photo
+          <div className="days" style={{ gridTemplateColumns: `repeat(${Math.min(cols, c.length)}, minmax(0, 1fr))` }}>
+            {Array.from({ length: c.length }, (_, i) => {
+              const d = addDays(c.start, i);
+              const st = cellState(data, d, t);
+              return (
+                <button key={d} type="button" disabled={st === 'future'} onClick={() => selectDay(d)}
+                  className={`cell ${st}${d === t ? ' is-today' : ''}${d === sel ? ' selected' : ''}`}
+                  aria-label={`Day ${i + 1}, ${pretty(d)}, ${{ done: 'complete', open: 'in progress', missed: 'missed', future: 'upcoming' }[st]}`}>
+                  {i + 1}
                 </button>
-              )}
-            </div>
-            {photoError && <p className="err">{photoError}</p>}
+              );
+            })}
+          </div>
+          <div className="legend">
+            <span><i className="l-done" />Complete</span>
+            <span><i className="l-open" />In progress</span>
+            <span><i className="l-miss" />Missed</span>
+            <span><i />Upcoming</span>
           </div>
         </section>
 
+        {data.attempts.length > 0 && (
+          <section className="card history">
+            <div className="eyebrow">Past attempts</div>
+            <ol>
+              {data.attempts.map((a, i) => (
+                <li key={i}>{pretty(a.start)} to {pretty(a.end)}: reached Day {a.reached} of {a.length}</li>
+              ))}
+            </ol>
+          </section>
+        )}
+        </>)}
+
+        {tab === cardTab && (<>
         <HorizonCard
           items={horizon}
           today={t}
@@ -916,6 +1164,8 @@ export default function App() {
           reminders={reminders}
           onEnableReminders={turnOnReminders}
         />
+
+        <DealsCard deals={data.deals || []} today={t} onChange={(deals) => setData((prev) => ({ ...prev, deals }))} />
 
         <section className="card weekly" aria-label="Weekly tasks">
           <div className="weekly-head">
@@ -972,43 +1222,7 @@ export default function App() {
             <button className="btn primary" type="button" onClick={addWeekly} disabled={!weeklyDraft.trim()}>Add</button>
           </div>
         </section>
-
-        <section className="card grid-card" aria-label="All days">
-          <div>
-            <div className="eyebrow">Tap a past day to edit it</div>
-            <h2>All {c.length} days</h2>
-          </div>
-          <div className="days" style={{ gridTemplateColumns: `repeat(${Math.min(cols, c.length)}, minmax(0, 1fr))` }}>
-            {Array.from({ length: c.length }, (_, i) => {
-              const d = addDays(c.start, i);
-              const st = cellState(data, d, t);
-              return (
-                <button key={d} type="button" disabled={st === 'future'} onClick={() => selectDay(d)}
-                  className={`cell ${st}${d === t ? ' is-today' : ''}${d === sel ? ' selected' : ''}`}
-                  aria-label={`Day ${i + 1}, ${pretty(d)}, ${{ done: 'complete', open: 'in progress', missed: 'missed', future: 'upcoming' }[st]}`}>
-                  {i + 1}
-                </button>
-              );
-            })}
-          </div>
-          <div className="legend">
-            <span><i className="l-done" />Complete</span>
-            <span><i className="l-open" />In progress</span>
-            <span><i className="l-miss" />Missed</span>
-            <span><i />Upcoming</span>
-          </div>
-        </section>
-
-        {data.attempts.length > 0 && (
-          <section className="card history">
-            <div className="eyebrow">Past attempts</div>
-            <ol>
-              {data.attempts.map((a, i) => (
-                <li key={i}>{pretty(a.start)} to {pretty(a.end)}: reached Day {a.reached} of {a.length}</li>
-              ))}
-            </ol>
-          </section>
-        )}
+        </>)}
 
         {setupOpen && (
           <Setup
@@ -1032,7 +1246,7 @@ export default function App() {
 
 // The admin for your routine. Changes save as you type.
 // New tasks start counting today; removed tasks stop counting today; "today only" tasks count for today alone.
-function TaskEditor({ tasks, sections, today, onChange }) {
+function TaskEditor({ tasks, sections, shown, tabId, today, onChange }) {
   const [drafts, setDrafts] = useState({});
   const [repeat, setRepeat] = useState({});
   const [newSection, setNewSection] = useState('');
@@ -1071,13 +1285,18 @@ function TaskEditor({ tasks, sections, today, onChange }) {
   const addSection = () => {
     const label = newSection.trim();
     if (!label) return;
-    onChange({ sections: [...sections, { id: uid(), label }] });
+    // New sections join the tab you're on.
+    onChange({ sections: [...sections, { id: uid(), label, tab: tabId }] });
     setNewSection('');
   };
   const renameSection = (id, label) => onChange({ sections: sections.map((s) => (s.id === id ? { ...s, label } : s)) });
+  const setTab = (id, tab) => onChange({ sections: sections.map((s) => (s.id === id ? { ...s, tab } : s)) });
+  // Moves a section past its neighbour within this tab.
   const moveSection = (i, dir) => {
+    const a = sections.indexOf(shown[i]);
+    const b = sections.indexOf(shown[i + dir]);
     const next = [...sections];
-    [next[i], next[i + dir]] = [next[i + dir], next[i]];
+    [next[a], next[b]] = [next[b], next[a]];
     onChange({ sections: next });
   };
   const deleteSection = (s) => {
@@ -1090,18 +1309,29 @@ function TaskEditor({ tasks, sections, today, onChange }) {
 
   return (
     <div className="task-editor">
-      {sections.map((s, si) => {
+      {shown.map((s, si) => {
         const list = visible.filter((x) => sectionOf(x, sections) === s.id);
         return (
           <div className="editor-section" key={s.id}>
             <div className="row section-row">
               <div className="order">
                 <button type="button" className="icon-btn small" aria-label={`Move ${s.label} section up`} disabled={si === 0} onClick={() => moveSection(si, -1)}>↑</button>
-                <button type="button" className="icon-btn small" aria-label={`Move ${s.label} section down`} disabled={si === sections.length - 1} onClick={() => moveSection(si, 1)}>↓</button>
+                <button type="button" className="icon-btn small" aria-label={`Move ${s.label} section down`} disabled={si === shown.length - 1} onClick={() => moveSection(si, 1)}>↓</button>
               </div>
               <input className="text section-input" id={'sec-' + s.id} maxLength={30} aria-label="Section name" value={s.label}
                 onChange={(e) => renameSection(s.id, e.target.value)}
                 onBlur={(e) => { if (!e.target.value.trim()) renameSection(s.id, 'Untitled'); }} />
+              <label className="tab-pick" htmlFor={'tab-' + s.id}>
+                <span>Tab</span>
+                <select className="text" id={'tab-' + s.id} value={hasOwnTab(s) ? 'own' : tabOf(s, sections)}
+                  onChange={(e) => setTab(s.id, e.target.value)}>
+                  <option value="main">Accounts</option>
+                  {sections.filter((x) => x.id !== s.id && hasOwnTab(x)).map((x) => (
+                    <option key={x.id} value={x.id}>{x.label}</option>
+                  ))}
+                  <option value="own">Own tab</option>
+                </select>
+              </label>
               <button type="button" className={'btn danger small-btn' + (armedSection === s.id ? ' armed' : '')}
                 disabled={sections.length === 1} onClick={() => deleteSection(s)}>
                 {armedSection === s.id ? (list.length ? `Delete + ${list.length} tasks?` : 'Delete?') : 'Delete'}
@@ -1353,12 +1583,12 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .time-edit label { display: grid; gap: 6px; font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
 .time-edit .text { width: auto; padding: 7px 10px; font: 400 15px/1.2 var(--body); background: var(--surface); text-transform: none; letter-spacing: 0; color: var(--ink); }
 .weekly-line { border-bottom: 0; }
-.note { padding: 14px 20px 18px; display: grid; gap: 6px; }
-.note textarea { width: 100%; min-height: 64px; resize: vertical; border: 1px solid var(--line); border-radius: 10px; background: var(--ground); padding: 10px 12px; font-size: 16px; }
-.photo { padding: 0 20px 18px; display: grid; gap: 10px; }
-.photo img { width: 100%; max-height: 360px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); }
-.file-btn { position: relative; overflow: hidden; }
-.file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.notes { padding: 18px 20px 20px; display: grid; gap: 12px; }
+.notes-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
+.notes h2 { font: 800 22px/1 var(--display); text-transform: uppercase; margin-top: 4px; }
+.notes textarea { min-height: 120px; resize: vertical; line-height: 1.5; }
+.notes-actions { align-items: center; }
+.note-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; padding: 12px 14px; background: var(--ground); border: 1px solid var(--line); border-radius: 10px; }
 
 .weekly { padding: 16px 20px; display: grid; gap: 10px; }
 .weekly-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
@@ -1415,7 +1645,19 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .section h3, .editor-section h3 { margin: 0; font: 800 18px/1 var(--display); text-transform: uppercase; letter-spacing: .02em; }
 .section.all-done .section-head .count { color: var(--accent); }
 .section .tasks { border-top: 1px solid var(--line); }
-.section-row { align-items: center; }
+.task-editor .section-row { align-items: center; flex-wrap: wrap; }
+.section-row .section-input { flex: 1 1 160px; }
+.tab-pick { display: inline-flex; align-items: center; gap: 6px; font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.tab-pick .text { width: auto; padding: 6px 8px; font: 500 13px/1.2 var(--body); text-transform: none; letter-spacing: 0; color: var(--ink); background: var(--surface); }
+
+.tabs { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; display: flex; gap: 6px; overflow-x: auto; padding-block: 8px; margin-block: -6px; background: var(--ground); scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab { flex: none; display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-weight: 600; font-size: 14px; color: var(--muted); }
+.tab:hover { color: var(--ink); }
+.tab.on { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.tab-count { font: 500 11px/1 var(--mono); font-variant-numeric: tabular-nums; opacity: .75; }
+.tab.complete:not(.on) .tab-count { color: var(--accent); opacity: 1; }
+.tab-empty { padding: 16px 20px 20px; border-top: 1px solid var(--line); }
 .section-input { font: 800 18px/1.1 var(--display) !important; text-transform: uppercase; letter-spacing: .02em; background: transparent !important; }
 .small-btn { flex: none; padding: 6px 12px; font-size: 13px; }
 .task-input { flex: 1; min-width: 0; position: relative; display: flex; }
@@ -1460,7 +1702,7 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .due-target .text { width: auto; padding: 6px 10px; }
 
 .horizon { padding: 18px 20px 20px; display: grid; gap: 14px; }
-.horizon h2 { font: 800 22px/1 var(--display); text-transform: uppercase; margin-top: 4px; }
+.horizon h2 { font: 800 22px/1 var(--display); text-transform: uppercase; }
 .capture { display: grid; gap: 8px; }
 .capture .row { align-items: center; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 2px; }
@@ -1478,6 +1720,38 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .up-remove:hover { color: var(--miss); background: var(--miss-soft); }
 .reminders { display: grid; gap: 6px; justify-items: start; }
 .on-note { margin: 0; color: var(--accent); font-size: 14px; font-weight: 600; }
+
+.deals { padding: 18px 20px 20px; display: grid; gap: 14px; }
+.deals-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.deals-head h2 { font: 800 22px/1 var(--display); text-transform: uppercase; margin-top: 4px; }
+.deals-total { display: grid; justify-items: end; gap: 4px; }
+.deals-total b { font: 800 28px/1 var(--display); font-variant-numeric: tabular-nums; }
+.deal-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.deal { border: 1px solid var(--line); border-radius: 12px; background: var(--ground); overflow: hidden; }
+.deal.open { border-color: var(--accent); }
+.deal-row { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; background: none; border: 0; text-align: left; }
+.deal-main { display: grid; gap: 2px; min-width: 0; flex: 1 1 180px; }
+.deal-brand { font-weight: 600; font-size: 16px; overflow-wrap: anywhere; }
+.deal-what { color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.deal-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.deal-amount { font: 500 14px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.deal-status, .deal-due { font: 500 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; padding: 5px 7px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.deal-status.s-active { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.deal-status.s-posted { color: var(--partial); border-color: var(--partial); }
+.deal-status.s-paid { color: var(--muted); }
+.deal-due.soon { color: var(--partial); border-color: var(--partial); }
+.deal-due.late { color: var(--miss); background: var(--miss-soft); border-color: transparent; }
+.deal-edit { display: grid; gap: 12px; padding: 4px 14px 14px; border-top: 1px solid var(--line); padding-top: 14px; }
+.deal-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.deal-fields label, .deal-notes { display: grid; gap: 6px; font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.deal-edit .text { background: var(--surface); font: 400 15px/1.3 var(--body); text-transform: none; letter-spacing: 0; color: var(--ink); padding: 8px 10px; }
+.deal-notes textarea { min-height: 60px; resize: vertical; }
+.deal-edit .seg { justify-self: start; }
+.deal-add { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.deal-add .row { flex-wrap: wrap; }
+.deal-amt { flex: 1 1 110px; width: auto; }
+.deal-paid { display: grid; gap: 10px; justify-items: start; }
+.deal-paid .deal-list { width: 100%; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 `;
