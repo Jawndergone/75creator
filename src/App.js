@@ -482,6 +482,95 @@ function HorizonCard({ items, today, onAdd, onRemove }) {
   );
 }
 
+// ---- activity log ----
+// Rebuilt from what's already saved: each day's check-offs (with times), plus the dates
+// tasks, Today items and brand deals were added and tasks were removed.
+function buildActivity(data, today) {
+  const c = data.challenge;
+  const sections = c.sections || SECTIONS;
+  const sectionName = (task) => {
+    const sec = sections.find((x) => x.id === sectionOf(task, sections));
+    return sec ? sec.label : '';
+  };
+  const days = {};
+  const day = (d) => days[d] || (days[d] = { date: d, done: [], added: [], removed: [] });
+
+  Object.entries(data.logs || {}).forEach(([d, log]) => {
+    if (d > today) return;
+    (log.done || []).forEach((id) => {
+      const task = c.tasks.find((x) => x.id === id);
+      if (!task) return;
+      const time = log.times && log.times[id];
+      day(d).done.push({ key: 't' + id, label: task.label, where: sectionName(task), at: time && time.end, label2: timeLabel(time) });
+    });
+  });
+  (data.horizon || []).forEach((h) => {
+    if (h.done && h.doneOn && h.doneOn <= today) day(h.doneOn).done.push({ key: 'h' + h.id, label: h.text, where: 'Today list' });
+    if (h.created && h.created <= today) {
+      day(h.created).added.push({ key: 'h' + h.id, text: h.date === h.created ? `Added "${h.text}" for today` : `Planned "${h.text}" for ${pretty(h.date)}` });
+    }
+  });
+  c.tasks.forEach((task) => {
+    if (task.added && task.added <= today) {
+      const once = task.removed === addDays(task.added, 1);
+      day(task.added).added.push({ key: 'a' + task.id, text: `Added "${task.label}" to ${sectionName(task)}${once ? ' (today only)' : ''}` });
+    }
+    if (task.removed && task.removed <= today && task.removed !== addDays(task.added || '', 1)) {
+      day(task.removed).removed.push({ key: 'r' + task.id, text: `Removed "${task.label}" from ${sectionName(task)}` });
+    }
+  });
+  (data.deals || []).forEach((deal) => {
+    if (deal.created && deal.created <= today) day(deal.created).added.push({ key: 'd' + deal.id, text: `New brand deal: ${deal.brand}` });
+  });
+
+  return Object.values(days)
+    .filter((x) => x.done.length || x.added.length || x.removed.length)
+    .sort((a, b) => (a.date < b.date ? 1 : -1))
+    .map((x) => ({ ...x, done: x.done.sort((a, b) => ((a.at || '99') < (b.at || '99') ? -1 : 1)) }));
+}
+
+function ActivityCard({ data, today }) {
+  const [shown, setShown] = useState(7);
+  const days = buildActivity(data, today);
+  const dayName = (d) => (d === today ? 'Today' : d === addDays(today, -1) ? 'Yesterday' : pretty(d));
+  return (
+    <section className="card activity" aria-label="Activity">
+      <h2>Activity</h2>
+      {!days.length && <p className="empty">Nothing logged yet. Completed and added tasks will show up here.</p>}
+      {days.slice(0, shown).map((d) => (
+        <div className="act-day" key={d.date}>
+          <div className="act-date">
+            <span>{dayName(d.date)}</span>
+            <span className="act-sum">
+              {d.done.length > 0 && `${d.done.length} completed`}
+              {d.done.length > 0 && (d.added.length + d.removed.length) > 0 && ' · '}
+              {(d.added.length + d.removed.length) > 0 && `${d.added.length + d.removed.length} ${d.added.length + d.removed.length === 1 ? 'change' : 'changes'}`}
+            </span>
+          </div>
+          <ul className="act-list">
+            {d.done.map((x) => (
+              <li key={x.key} className="act-done">
+                <span className="act-dot" aria-hidden="true" />
+                <span className="act-text">{x.label}<span className="act-where">{x.where}</span></span>
+                {x.label2 && <span className="act-time">{x.label2}</span>}
+              </li>
+            ))}
+            {[...d.added, ...d.removed].map((x) => (
+              <li key={x.key} className="act-change">
+                <span className="act-dot hollow" aria-hidden="true" />
+                <span className="act-text">{x.text}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {days.length > shown && (
+        <button className="btn" type="button" onClick={() => setShown(shown + 14)}>Show earlier days</button>
+      )}
+    </section>
+  );
+}
+
 const CheckIcon = () => (
   <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
     <path d="M3 8.5l3.2 3L13 4.5" stroke="var(--check-ink)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
@@ -1072,6 +1161,8 @@ export default function App() {
                 </ol>
               </section>
             )}
+
+            <ActivityCard data={data} today={t} />
           </div>
         )}
 
@@ -1449,6 +1540,20 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .logo-btn { display: block; padding: 4px; margin: -4px; border: 0; border-radius: 10px; background: none; cursor: pointer; }
 .logo-btn:hover .logo-img { opacity: .85; }
 .calendar-page { display: grid; gap: 14px; }
+.activity { padding: 18px 20px 20px; display: grid; gap: 18px; justify-items: stretch; }
+.activity h2 { font: 600 15px/1.2 var(--body); }
+.activity > .btn { justify-self: start; }
+.act-day { display: grid; gap: 8px; }
+.act-date { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-weight: 600; font-size: 14px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.act-sum { font-weight: 400; font-size: 13px; color: var(--muted); }
+.act-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.act-list li { display: flex; align-items: baseline; gap: 10px; font-size: 15px; }
+.act-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--check); transform: translateY(-1px); }
+.act-dot.hollow { background: none; border: 1.5px solid var(--muted); }
+.act-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.act-where { margin-left: 8px; font-size: 13px; color: var(--muted); }
+.act-change { color: var(--muted); }
+.act-time { flex: none; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .calendar-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .calendar-head h2 { font: 600 15px/1.2 var(--body); }
 .calendar-page .grid-card { padding: 20px; }
