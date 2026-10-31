@@ -254,17 +254,17 @@ function NotesCard({ note, dateLabel, onSave }) {
   };
 
   return (
-    <section className="card notes" aria-label="Notes">
+    <section className="card notes" aria-label="Ideas">
       <div className="notes-head">
         <div>
           <div className="eyebrow">{dateLabel}</div>
-          <h2>Notes</h2>
+          <h2>Ideas</h2>
         </div>
         {!editing && <button className="btn" type="button" onClick={() => setEditing(true)}>Edit</button>}
       </div>
       {editing ? (
         <>
-          <textarea className="text" id="note" value={draft} aria-label="Notes for this day"
+          <textarea className="text" id="note" value={draft} aria-label="Ideas for this day"
             placeholder="Challenges, insights, breakthroughs, or anything you want to remember."
             onChange={(e) => setDraft(e.target.value)} />
           <div className="row notes-actions">
@@ -562,7 +562,7 @@ function HorizonCard({ items, today, onAdd, onRemove, reminders, onEnableReminde
 
 const CheckIcon = () => (
   <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-    <path d="M3 8.5l3.2 3L13 4.5" stroke="var(--accent-ink)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M3 8.5l3.2 3L13 4.5" stroke="var(--check-ink)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 
@@ -1003,12 +1003,16 @@ export default function App() {
     <div className="app">
       <style>{CSS}</style>
       <div className="wrap">
-        <header>
-          <div>
+        <header className="top">
+          <div className="top-left">
             <Logo />
             {c.name !== '75 Creator' && <h1 className="challenge-name">{c.name}</h1>}
           </div>
-          <button className="gear" type="button" aria-label="Settings" aria-haspopup="dialog" onClick={() => setSettingsOpen(true)}>
+          <div className="top-day">
+            <div className="top-daynum">{t < c.start ? 'Day 0' : `Day ${day}`}</div>
+            <div className="top-date">{parse(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+          </div>
+          <button className="gear top-right" type="button" aria-label="Settings" aria-haspopup="dialog" onClick={() => setSettingsOpen(true)}>
             <GearIcon />
           </button>
         </header>
@@ -1051,31 +1055,14 @@ export default function App() {
           </section>
         )}
 
-        {isMain && (
-        <section className="daybar" aria-label="Progress"
-          title={c.rule === 'strict' ? 'Hard rules: miss a day and you restart at Day 1.' : `Grace days: ${Math.min(missesSoFar(data, t), c.grace)} of ${c.grace} used.`}>
-          <span className="daybar-day">
-            {t < c.start ? <>Starts {pretty(c.start)}</> : <>Day <b>{day}</b><span>/{c.length}</span></>}
-          </span>
-          <span className="rail" aria-hidden="true"><i style={{ width: (100 * done / c.length).toFixed(1) + '%' }} /></span>
-          <span className="daybar-stats">
-            <span>Streak <b>{streak(data, t)}</b></span>
-            <span>Done <b>{done}</b></span>
-            <span>Restarts <b>{data.attempts.length}</b></span>
-          </span>
-        </section>
-        )}
-
         <section className="card today" aria-label="Checklist" ref={checklistRef}>
           <div className="today-head">
             <div>
               <div className="eyebrow">
-                {isToday ? `Day ${dayOf(c, sel)} · ${pretty(sel)}` : `${pretty(sel)} · editing a past day`}
+                {isToday ? `${tabDone} / ${tabTotal} done` : `Past day · Day ${dayOf(c, sel)} · ${pretty(sel)} · ${tabDone} / ${tabTotal} done`}
               </div>
-              <h2>{isMain ? (isToday ? 'Today' : `Day ${dayOf(c, sel)}`) : tabs.find((x) => x.id === tab).label}</h2>
             </div>
             <div className="head-right">
-              {!editingTasks && <span className="count">{tabDone} / {tabTotal} done</span>}
               {editingTasks ? (
                 <button className="btn primary" type="button" onClick={() => setEditingTasks(false)}>Done</button>
               ) : !isToday && (
@@ -1259,6 +1246,17 @@ export default function App() {
 
                 <section className="sheet-group">
                   <div className="eyebrow">History</div>
+                  <div className="stats-row">
+                    <div><b>{day}<span>/{c.length}</span></b><span>Day</span></div>
+                    <div><b>{streak(data, t)}</b><span>Streak</span></div>
+                    <div><b>{done}</b><span>Days done</span></div>
+                    <div><b>{data.attempts.length}</b><span>Restarts</span></div>
+                  </div>
+                  <p className="hint">
+                    {c.rule === 'strict'
+                      ? 'Hard rules: miss a day and you restart at Day 1.'
+                      : `Grace days: ${Math.min(missesSoFar(data, t), c.grace)} of ${c.grace} used. Miss more and you restart.`}
+                  </p>
             <section className="card grid-card" aria-label="All days">
               <div>
                 <div className="eyebrow">Tap a day to view or edit it</div>
@@ -1554,6 +1552,8 @@ const CSS = `
   --miss: #D12F36;
   --miss-soft: #FBE4E5;
   --partial: #C98A0C;
+  --check: #E5484D;
+  --check-ink: #FFFFFF;
   --display: "Big Shoulders Display", "Arial Narrow", Impact, sans-serif;
   --body: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
@@ -1564,6 +1564,7 @@ const CSS = `
     --ground: #0C1016; --surface: #151B24; --ink: #E7EBF1; --muted: #8B95A4; --line: #263040;
     --accent: #6F8CFF; --accent-ink: #0C1016; --accent-soft: #1C2647;
     --miss: #FF6B70; --miss-soft: #3A1A1D; --partial: #F0B547;
+    --check: #EF4A50; --check-ink: #FFFFFF;
   }
 }
 
@@ -1609,7 +1610,18 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 .finished h2 { font: 900 36px/1 var(--display); text-transform: uppercase; }
 .finished p { margin: 0; }
 
-header { align-items: center; }
+header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; }
+.top-left { justify-self: start; min-width: 0; }
+.top-right { justify-self: end; }
+.top-day { text-align: center; }
+.top-daynum { font: 900 44px/.95 var(--display); text-transform: uppercase; letter-spacing: .01em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.top-date { margin-top: 4px; font-size: 15px; color: var(--muted); white-space: nowrap; }
+@media (max-width: 480px) { .logo-word { display: none; } .top-daynum { font-size: 38px; } }
+.stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.stats-row > div { display: grid; gap: 4px; }
+.stats-row b { font: 800 26px/1 var(--display); font-variant-numeric: tabular-nums; }
+.stats-row b span { font-size: .6em; color: var(--muted); }
+.stats-row > div > span { font: 500 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
 .gear { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
 .gear:hover { border-color: var(--muted); }
 .gear svg { width: 21px; height: 21px; }
@@ -1648,7 +1660,7 @@ header { align-items: center; }
 .rail i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .4s ease; }
 
 .today { overflow: hidden; scroll-margin-top: 16px; }
-.today-head { padding: 16px 20px 12px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.today-head { padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .today-head h2 { font: 800 26px/1 var(--display); text-transform: uppercase; margin-top: 4px; }
 .count { font: 500 13px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .tasks { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
@@ -1656,7 +1668,7 @@ header { align-items: center; }
 .task:hover { background: var(--ground); }
 .box { flex: none; width: 26px; height: 26px; border-radius: 7px; border: 2px solid var(--line); display: grid; place-items: center; transition: background .15s, border-color .15s; }
 .box svg { width: 16px; height: 16px; opacity: 0; }
-.task[aria-pressed="true"] .box { background: var(--accent); border-color: var(--accent); }
+.task[aria-pressed="true"] .box { background: var(--check); border-color: var(--check); }
 .task[aria-pressed="true"] .box svg { opacity: 1; }
 .task[aria-pressed="true"] .label { color: var(--muted); }
 .task-line { display: flex; align-items: center; border-bottom: 1px solid var(--line); }
@@ -1674,7 +1686,7 @@ header { align-items: center; }
 .weekly-line { border-bottom: 0; }
 .notes { padding: 18px 20px 20px; display: grid; gap: 12px; }
 .notes-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
-.notes h2 { font: 800 22px/1 var(--display); text-transform: uppercase; margin-top: 4px; }
+.notes h2 { font: 600 15px/1.2 var(--body); letter-spacing: 0; margin-top: 4px; }
 .notes textarea { min-height: 120px; resize: vertical; line-height: 1.5; }
 .notes-actions { align-items: center; }
 .note-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; padding: 12px 14px; background: var(--ground); border: 1px solid var(--line); border-radius: 10px; }
@@ -1731,7 +1743,7 @@ header { align-items: center; }
 .rules small { color: var(--muted); font-size: 14px; }
 .head-right { display: flex; align-items: center; gap: 12px; }
 .section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 14px 20px 8px; border-top: 1px solid var(--line); background: var(--ground); }
-.section h3, .editor-section h3 { margin: 0; font: 800 18px/1 var(--display); text-transform: uppercase; letter-spacing: .02em; }
+.section h3, .editor-section h3 { margin: 0; font: 600 15px/1.2 var(--body); letter-spacing: 0; }
 .section.all-done .section-head .count { color: var(--accent); }
 .section .tasks { border-top: 1px solid var(--line); }
 .task-editor .section-row { align-items: center; flex-wrap: wrap; }
