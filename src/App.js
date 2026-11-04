@@ -1220,7 +1220,6 @@ export default function App() {
                 <div className={'section' + (n === list.length ? ' all-done' : '')} key={s.id}>
                   <div className="section-head">
                     <h3>{s.avatar && <img className="sec-avatar" src={s.avatar} alt="" />}{s.label}</h3>
-                    <span className="count">{n}/{list.length}</span>
                   </div>
                   <ul className="tasks">
                     {list.map((task) => (
@@ -1697,6 +1696,7 @@ const CSS = `
   --ink: #10151C;
   --muted: #5A6472;
   --line: #D3DAE3;
+  --divider: #E4E8EE; /* fainter lines between tasks and accounts */
   --accent: #2448F2;
   --accent-ink: #FFFFFF;
   --accent-soft: #E3E9FF;
@@ -1714,7 +1714,7 @@ const CSS = `
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --ground: #1B1B1E; --surface: #252528; --ink: #F2F2F2; --muted: #97979C; --line: #35353A;
+    --ground: #141416; --surface: #141416; --ink: #F2F2F2; --muted: #97979C; --line: #2F2F34; --divider: #222226;
     --accent: #6F8CFF; --accent-ink: #000000; --accent-soft: #232A3E;
     --miss: #FF6B70; --miss-soft: #2A1112; --partial: #F0B547;
     --check: #FF1F45; --check-ink: #FFFFFF; --check-glow: 0 0 10px rgba(255, 31, 69, .55);
@@ -1849,7 +1849,7 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .task[aria-pressed="true"] .box { background: var(--check); border-color: var(--check); box-shadow: var(--check-glow); }
 .task[aria-pressed="true"] .box svg { opacity: 1; }
 .task[aria-pressed="true"] .label { color: var(--muted); }
-.task-line { display: flex; align-items: center; border-bottom: 1px solid var(--line); }
+.task-line { display: flex; align-items: center; border-bottom: 1px solid var(--divider); }
 .task-line .task { flex: 1; min-width: 0; border-bottom: 0; padding-right: 8px; }
 .time-chip { flex: none; margin-right: 16px; font: 500 12px/1 var(--mono); color: var(--ink); background: var(--ground); border: 1px solid var(--line); border-radius: 99px; padding: 7px 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .time-chip:hover { border-color: var(--muted); }
@@ -1917,7 +1917,15 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .avatar-pick input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .avatar-remove { width: 22px; height: 22px; font-size: 14px; margin-left: -6px; }
 .section.all-done .section-head .count { color: var(--accent); }
-.section .tasks { border-top: 1px solid var(--line); }
+/* Each account's header shares the box with its tasks: same shade, no line under the header.
+   Lines stay between tasks and between accounts. */
+.section .tasks { border-top: 0; padding-bottom: 14px; }
+/* Account names a step bigger than the 17px task text. */
+.section .section-head h3 { font-size: 19px; }
+.section .section-head { background: none; border-top: 0; }
+/* A darker band between accounts so each one reads as its own group. */
+.section + .section::before { content: ''; display: block; height: 10px; background: var(--ground); border-top: 1px solid var(--divider); border-bottom: 1px solid var(--divider); }
+.section .tasks li:last-child .task-line { border-bottom: 0; }
 .task-editor .section-row { align-items: center; flex-wrap: wrap; }
 .section-row .section-input { flex: 1 1 160px; }
 .tab-pick { display: inline-flex; align-items: center; gap: 6px; font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
