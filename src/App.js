@@ -515,7 +515,7 @@ function buildActivity(data, today) {
       const once = task.removed === addDays(task.added, 1);
       day(task.added).added.push({ key: 'a' + task.id, text: `Added "${task.label}" to ${sectionName(task)}${once ? ' (today only)' : ''}` });
     }
-    if (task.removed && task.removed <= today && task.removed !== addDays(task.added || '', 1)) {
+    if (task.removed && task.removed <= today && !(task.added && task.removed === addDays(task.added, 1))) {
       day(task.removed).removed.push({ key: 'r' + task.id, text: `Removed "${task.label}" from ${sectionName(task)}` });
     }
   });
@@ -1051,6 +1051,7 @@ export default function App() {
               shown={tabSections}
               tabId={tab}
               today={t}
+              trash={c.trash || []}
               onChange={(changes) => setData((prev) => ({ ...prev, challenge: { ...prev.challenge, ...changes } }))}
             />
           ) : tabTotal === 0 ? (
@@ -1246,7 +1247,7 @@ function squareThumb(file, size = 96) {
   });
 }
 
-function TaskEditor({ tasks, sections, shown, tabId, today, onChange }) {
+function TaskEditor({ tasks, sections, shown, tabId, today, trash, onChange }) {
   const [drafts, setDrafts] = useState({});
   const [repeat, setRepeat] = useState({});
   const [newSection, setNewSection] = useState('');
@@ -1309,8 +1310,45 @@ function TaskEditor({ tasks, sections, shown, tabId, today, onChange }) {
     if (armedSection !== s.id) return setArmedSection(s.id);
     let next = tasks;
     visible.filter((x) => sectionOf(x, sections) === s.id).forEach((task) => { next = retire(next, task); });
-    onChange({ tasks: next, sections: sections.filter((x) => x.id !== s.id) });
+    const kept = trash.filter((x) => x.id !== s.id);
+    onChange({ tasks: next, sections: sections.filter((x) => x.id !== s.id), trash: [...kept, { ...s, deletedOn: today }] });
     setArmedSection(null);
+  };
+
+  // Deleted sections from the last 30 days. Their tasks were ended on the day the
+  // section went, so restoring brings back the section and un-ends those tasks.
+  const endedWith = (task, id, day) => task.section === id && task.removed === day && !(task.added && task.removed === addDays(task.added, 1));
+  const deleted = [];
+  tasks.forEach((task) => {
+    if (!task.removed || sections.some((x) => x.id === task.section)) return;
+    const found = deleted.find((x) => x.id === task.section);
+    if (!found) deleted.push({ id: task.section, deletedOn: task.removed });
+    else if (task.removed > found.deletedOn) found.deletedOn = task.removed;
+  });
+  trash.forEach((x) => { if (!sections.some((y) => y.id === x.id) && !deleted.some((y) => y.id === x.id)) deleted.push({ id: x.id, deletedOn: x.deletedOn }); });
+  const restorable = deleted
+    .map((d) => {
+      const saved = trash.find((x) => x.id === d.id);
+      const deletedOn = saved ? saved.deletedOn : d.deletedOn;
+      const known = SECTIONS.find((x) => x.id === d.id);
+      return {
+        section: saved ? (({ deletedOn: _, ...rest }) => rest)(saved) : { id: d.id, label: known ? known.label : 'Restored section' },
+        deletedOn,
+        count: tasks.filter((x) => endedWith(x, d.id, deletedOn)).length,
+      };
+    })
+    .filter((r) => diffDays(r.deletedOn, today) <= 30 && (r.count || trash.some((x) => x.id === r.section.id)));
+  const restoreSection = (r) => {
+    onChange({
+      // 30K Months goes back to its usual spot right after Accounts.
+      sections: r.section.id === CARD_TAB ? [r.section, ...sections] : [...sections, r.section],
+      tasks: tasks.map((x) => {
+        if (!endedWith(x, r.section.id, r.deletedOn)) return x;
+        const { removed, ...rest } = x;
+        return rest;
+      }),
+      trash: trash.filter((x) => x.id !== r.section.id),
+    });
   };
 
   return (
@@ -1383,6 +1421,18 @@ function TaskEditor({ tasks, sections, shown, tabId, today, onChange }) {
           </div>
         );
       })}
+
+      {restorable.length > 0 && (
+        <div className="editor-section new-section">
+          <h3>Recently deleted</h3>
+          {restorable.map((r) => (
+            <div className="row restore-row" key={r.section.id}>
+              <span className="restore-label"><b>{r.section.label}</b> <span className="hint">{r.count} {r.count === 1 ? 'task' : 'tasks'} · deleted {r.deletedOn === today ? 'today' : r.deletedOn}</span></span>
+              <button className="btn primary small-btn" type="button" onClick={() => restoreSection(r)}>Restore</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="editor-section new-section">
         <h3>New section</h3>
@@ -1755,6 +1805,8 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .task-editor .text { flex: 1; min-width: 0; width: auto; }
 .task-editor .add-row { margin-top: 6px; }
 .task-editor .section-row { flex-wrap: wrap; }
+.task-editor .restore-row { align-items: center; justify-content: space-between; }
+.restore-label { min-width: 0; }
 .task-editor .section-row .section-input { flex: 1 1 140px; }
 .wrap > *, .sheet > *, .sheet-group > *, .task-editor > *, .editor-section > * { min-width: 0; }
 .order { display: grid; gap: 2px; }
