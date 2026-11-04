@@ -1927,6 +1927,8 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 /* Each account is its own box, with space between boxes instead of an outer card. */
 .checklist.boxed { background: none; border: 0; border-radius: 0; overflow: visible; display: grid; gap: 14px; }
 .checklist.boxed .section { background: var(--surface); border: 1px solid var(--box-line); border-radius: 14px; overflow: hidden; }
+/* Test: no side edges; top and bottom lines run to the edges of the screen, content stays where it was. */
+.checklist.boxed .section { border-left: 0; border-right: 0; border-radius: 0; margin-inline: calc(50% - 50vw); padding-inline: calc(50vw - 50%); }
 .section .tasks li:last-child .task-line { border-bottom: 0; }
 .task-editor .section-row { align-items: center; flex-wrap: wrap; }
 .section-row .section-input { flex: 1 1 160px; }
