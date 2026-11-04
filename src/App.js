@@ -137,6 +137,7 @@ function freshData(start) {
     weeks: {},
     horizon: [],
     deals: [],
+    pipeline: [],
   };
 }
 
@@ -197,6 +198,180 @@ function writeBackup(userId, data) {
   }
 }
 
+
+// ---- outreach pipeline: brands you've pitched, separate from the daily tasks ----
+const PIPELINE_TAB = 'pipeline';
+const STAGES = [
+  { id: 'reached', label: 'Reached out' },
+  { id: 'replied', label: 'Replied' },
+  { id: 'talking', label: 'Talking' },
+  { id: 'won', label: 'Won' },
+  { id: 'lost', label: 'No' },
+];
+const OPEN_STAGES = ['reached', 'replied', 'talking'];
+const CHANNELS = ['Email', 'DM', 'TikTok Shop', 'Other'];
+
+function followText(lead, today) {
+  if (!lead.followUp || !OPEN_STAGES.includes(lead.stage)) return null;
+  if (lead.followUp < today) return { text: 'Follow up · ' + pretty(lead.followUp), tone: 'late' };
+  if (lead.followUp === today) return { text: 'Follow up today', tone: 'soon' };
+  if (lead.followUp === addDays(today, 1)) return { text: 'Follow up tomorrow', tone: 'soon' };
+  return { text: 'Follow up ' + pretty(lead.followUp), tone: '' };
+}
+
+function LeadEditor({ lead, onUpdate, onRemove, onWin, onClose }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const id = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(id);
+  }, [armed]);
+  return (
+    <div className="deal-edit">
+      <div className="deal-fields">
+        <label htmlFor={'lbrand-' + lead.id}>Brand
+          <input className="text" id={'lbrand-' + lead.id} maxLength={50} value={lead.brand}
+            onChange={(e) => onUpdate({ brand: e.target.value })} />
+        </label>
+        <label htmlFor={'lcontact-' + lead.id}>Contact
+          <input className="text" id={'lcontact-' + lead.id} maxLength={80} value={lead.contact || ''} placeholder="Name, email or @handle"
+            onChange={(e) => onUpdate({ contact: e.target.value })} />
+        </label>
+        <label htmlFor={'lchannel-' + lead.id}>Via
+          <select className="text" id={'lchannel-' + lead.id} value={lead.channel || 'Email'} onChange={(e) => onUpdate({ channel: e.target.value })}>
+            {CHANNELS.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </label>
+        <label htmlFor={'lreached-' + lead.id}>Reached out
+          <input className="text" type="date" id={'lreached-' + lead.id} value={lead.reachedOn || ''}
+            onChange={(e) => onUpdate({ reachedOn: e.target.value || null })} />
+        </label>
+        <label htmlFor={'lfollow-' + lead.id}>Follow up
+          <input className="text" type="date" id={'lfollow-' + lead.id} value={lead.followUp || ''}
+            onChange={(e) => onUpdate({ followUp: e.target.value || null })} />
+        </label>
+      </div>
+      <div className="seg seg-wrap" role="radiogroup" aria-label="Stage">
+        {STAGES.map((st) => (
+          <button key={st.id} type="button" role="radio" aria-checked={lead.stage === st.id}
+            className={lead.stage === st.id ? 'on' : ''} onClick={() => onUpdate({ stage: st.id })}>{st.label}</button>
+        ))}
+      </div>
+      <label className="deal-notes" htmlFor={'lnotes-' + lead.id}>Notes
+        <textarea className="text" id={'lnotes-' + lead.id} value={lead.notes || ''}
+          placeholder="What you pitched, rates, what they said"
+          onChange={(e) => onUpdate({ notes: e.target.value })} />
+      </label>
+      <div className="actions">
+        <button className="btn primary" type="button" onClick={onClose}>Done</button>
+        {lead.stage === 'won' && !lead.dealId && <button className="btn" type="button" onClick={onWin}>Add to Brand Deals</button>}
+        <button className={'btn danger' + (armed ? ' armed' : '')} type="button"
+          onClick={() => { if (armed) onRemove(); else setArmed(true); }}>
+          {armed ? 'Tap again to delete' : 'Delete'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PipelineCard({ leads, today, onChange, onWin }) {
+  const [brand, setBrand] = useState('');
+  const [contact, setContact] = useState('');
+  const [channel, setChannel] = useState('Email');
+  const [adding, setAdding] = useState(false);
+  const [openId, setOpenId] = useState(null);
+  const [filter, setFilter] = useState('open');
+
+  const add = () => {
+    const b = brand.trim();
+    if (!b) return;
+    // New leads get a follow-up reminder 3 days out.
+    onChange([...leads, { id: uid(), brand: b, contact: contact.trim(), channel, stage: 'reached', reachedOn: today, followUp: addDays(today, 3), notes: '', created: today }]);
+    setBrand(''); setContact('');
+    setAdding(false);
+  };
+  const update = (id, changes) => onChange(leads.map((l) => (l.id === id ? { ...l, ...changes } : l)));
+  const remove = (id) => { onChange(leads.filter((l) => l.id !== id)); setOpenId(null); };
+
+  const count = (id) => leads.filter((l) => (id === 'open' ? OPEN_STAGES.includes(l.stage) : l.stage === id)).length;
+  const filters = [{ id: 'open', label: 'Open' }, ...STAGES];
+  // Overdue follow-ups first, then by follow-up date, then newest.
+  const sortKey = (l) => (OPEN_STAGES.includes(l.stage) && l.followUp ? l.followUp : '9999');
+  const shown = leads
+    .filter((l) => (filter === 'open' ? OPEN_STAGES.includes(l.stage) : l.stage === filter))
+    .sort((a, b) => (sortKey(a) === sortKey(b) ? ((b.reachedOn || '') < (a.reachedOn || '') ? -1 : 1) : sortKey(a) < sortKey(b) ? -1 : 1));
+
+  return (
+    <section className="card deals pipeline" aria-label="Brand outreach pipeline">
+      <div className="deals-head">
+        <h2>Pipeline</h2>
+        <div className="deals-total">
+          {leads.length > 0 && <span className="eyebrow">{leads.length} {leads.length === 1 ? 'brand' : 'brands'} pitched</span>}
+          <button type="button" className="plus-btn" aria-label={adding ? 'Close' : 'Add a brand'} aria-expanded={adding}
+            onClick={() => setAdding(!adding)}>{adding ? '×' : '+'}</button>
+        </div>
+      </div>
+
+      {adding && (
+        <div className="deal-add">
+          <div className="row">
+            <input className="text" id="leadBrand" maxLength={50} autoFocus placeholder="Brand" aria-label="Brand"
+              value={brand} onChange={(e) => setBrand(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') add(); }} />
+            <input className="text" id="leadContact" maxLength={80} placeholder="Contact (optional)" aria-label="Contact"
+              value={contact} onChange={(e) => setContact(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') add(); }} />
+          </div>
+          <div className="row">
+            <select className="text deal-due-input" id="leadChannel" aria-label="Reached out via" value={channel} onChange={(e) => setChannel(e.target.value)}>
+              {CHANNELS.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <button className="btn primary" type="button" onClick={add} disabled={!brand.trim()}>Add brand</button>
+          </div>
+        </div>
+      )}
+
+      {leads.length > 0 && (
+        <div className="stage-filter" role="tablist" aria-label="Filter by stage">
+          {filters.map((f) => (
+            <button key={f.id} type="button" role="tab" aria-selected={filter === f.id}
+              className={'stage-chip' + (filter === f.id ? ' on' : '')} onClick={() => { setFilter(f.id); setOpenId(null); }}>
+              {f.label} <span>{count(f.id)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {shown.length ? (
+        <ul className="deal-list">
+          {shown.map((lead) => {
+            const f = followText(lead, today);
+            const isOpen = openId === lead.id;
+            const sub = [lead.contact, lead.channel, lead.reachedOn && 'sent ' + pretty(lead.reachedOn)].filter(Boolean).join(' · ');
+            return (
+              <li key={lead.id} className={'deal' + (isOpen ? ' open' : '')}>
+                <button type="button" className="deal-row" aria-expanded={isOpen} onClick={() => setOpenId(isOpen ? null : lead.id)}>
+                  <span className="deal-main">
+                    <span className="deal-brand">{lead.brand || 'Untitled brand'}</span>
+                    {sub && <span className="deal-what">{sub}</span>}
+                  </span>
+                  <span className="deal-meta">
+                    <span className={'deal-status st-' + lead.stage}>{STAGES.find((st) => st.id === lead.stage).label}</span>
+                    {f && <span className={'deal-due ' + f.tone}>{f.text}</span>}
+                  </span>
+                </button>
+                {isOpen && (
+                  <LeadEditor lead={lead} onUpdate={(c) => update(lead.id, c)} onRemove={() => remove(lead.id)} onClose={() => setOpenId(null)}
+                    onWin={() => update(lead.id, { dealId: onWin(lead) })} />
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="empty">{leads.length ? 'Nothing in this stage.' : "Tap + each time you pitch a brand. This tab doesn't count toward your daily tasks."}</p>
+      )}
+    </section>
+  );
+}
 
 // ---- brand deals ----
 const DEAL_STATUS = [
@@ -480,6 +655,9 @@ function buildActivity(data, today) {
       day(task.removed).removed.push({ key: 'r' + task.id, text: `Removed "${task.label}" from ${sectionName(task)}` });
     }
   });
+  (data.pipeline || []).forEach((lead) => {
+    if (lead.created && lead.created <= today) day(lead.created).added.push({ key: 'p' + lead.id, text: `Pitched ${lead.brand}${lead.channel ? ' via ' + lead.channel : ''}` });
+  });
   (data.deals || []).forEach((deal) => {
     if (deal.created && deal.created <= today) day(deal.created).added.push({ key: 'd' + deal.id, text: `New brand deal: ${deal.brand}` });
   });
@@ -718,6 +896,7 @@ export default function App() {
         if (!next.attempts) next.attempts = [];
         if (!next.horizon) next.horizon = [];
         if (!next.deals) next.deals = [];
+        if (!next.pipeline) next.pipeline = [];
         if (!next.challenge.sections) next.challenge.sections = SECTIONS;
       } else {
         // No new-format data on the server. If an old copy of the app overwrote it,
@@ -857,9 +1036,10 @@ export default function App() {
   const isToday = sel === t;
   const selTasks = activeTasks(c, sel);
   const sections = c.sections || SECTIONS;
-  const tabs = [{ id: 'main', label: 'Accounts' }, ...sections.filter(hasOwnTab).map((s) => ({ id: s.id, label: s.label }))];
+  const tabs = [{ id: 'main', label: 'Accounts' }, ...sections.filter(hasOwnTab).map((s) => ({ id: s.id, label: s.label })), { id: PIPELINE_TAB, label: 'Pipeline' }];
   const tab = tabs.some((x) => x.id === activeTab) ? activeTab : 'main';
   const isMain = tab === 'main';
+  const isPipeline = tab === PIPELINE_TAB;
   const tabSections = sections.filter((s) => tabOf(s, sections) === tab)
     .sort((a, b) => (b.id === tab) - (a.id === tab));
   const cardTab = tabs.some((x) => x.id === CARD_TAB) ? CARD_TAB : 'main';
@@ -992,6 +1172,20 @@ export default function App() {
 
         {tab === cardTab && <TodayCard items={dueItems} today={t} onUpdate={updateHorizon} onAdd={addTodayItem} />}
 
+        {isPipeline && (
+          <PipelineCard
+            leads={data.pipeline || []}
+            today={t}
+            onChange={(pipeline) => setData((prev) => ({ ...prev, pipeline }))}
+            onWin={(lead) => {
+              const id = uid();
+              setData((prev) => ({ ...prev, deals: [...(prev.deals || []), { id, brand: lead.brand, what: '', due: null, status: 'active', notes: lead.notes || '', created: t }] }));
+              return id;
+            }}
+          />
+        )}
+
+        {!isPipeline && (
         <section className="card today checklist" aria-label="Checklist" ref={checklistRef}>
           {(editingTasks || !isToday) && (
             <div className="today-head">
@@ -1048,6 +1242,7 @@ export default function App() {
             })
           )}
         </section>
+        )}
 
         {tab === cardTab && (<>
         <HorizonCard
@@ -1158,7 +1353,7 @@ export default function App() {
                 <section className="sheet-group">
                   <div className="eyebrow">Challenge</div>
                   <button className="menu-item" type="button"
-                    onClick={() => { closeSettings(); setEditingTasks(true); setSelected(t); window.scrollTo({ top: 0 }); }}>
+                    onClick={() => { closeSettings(); setEditingTasks(true); setSelected(t); if (isPipeline) setActiveTab('main'); window.scrollTo({ top: 0 }); }}>
                     <b>Edit tasks</b>
                     <span className="sub">Add, rename or move tasks and sections on the {tabs.find((x) => x.id === tab).label} tab</span>
                     <span className="chev" aria-hidden="true">›</span>
@@ -1880,6 +2075,17 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .deal-notes textarea { min-height: 60px; resize: vertical; }
 .deal-edit .seg { justify-self: start; }
 .deal-add { display: grid; gap: 8px; }
+.seg-wrap { flex-wrap: wrap; border-radius: 16px; }
+.stage-filter { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 0 -2px; padding: 0 2px; }
+.stage-filter::-webkit-scrollbar { display: none; }
+.stage-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line); background: none; font-size: 13px; font-weight: 600; color: var(--muted); }
+.stage-chip span { font-weight: 500; font-size: 11px; opacity: .75; font-variant-numeric: tabular-nums; }
+.stage-chip.on { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.deal-status.st-reached { color: var(--muted); }
+.deal-status.st-replied { color: var(--partial); border-color: var(--partial); }
+.deal-status.st-talking, .deal-status.st-won { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.deal-status.st-lost { color: var(--muted); opacity: .7; }
+.deal-fields select.text { width: 100%; }
 .deal-add .row .text:not(.deal-due-input) { flex: 1 1 160px; width: auto; }
 .deal-add .row { flex-wrap: wrap; }
 .deal-due-input { flex: 1 1 160px; }
