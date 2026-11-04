@@ -1715,7 +1715,7 @@ const CSS = `
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --ground: #141416; --surface: #141416; --ink: #F2F2F2; --muted: #97979C; --line: #2F2F34; --box-line: #38383E; --divider: #222226;
+    --ground: #0C0C0E; --surface: #0C0C0E; --ink: #F2F2F2; --muted: #97979C; --line: #2F2F34; --box-line: #38383E; --divider: #222226;
     --accent: #6F8CFF; --accent-ink: #000000; --accent-soft: #232A3E;
     --miss: #FF6B70; --miss-soft: #2A1112; --partial: #F0B547;
     --check: #FF1F45; --check-ink: #FFFFFF; --check-glow: 0 0 10px rgba(255, 31, 69, .55);
@@ -1910,7 +1910,7 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 20px 8px; border-top: 1px solid var(--line); background: var(--ground); }
 .section h3, .editor-section h3 { margin: 0; font: 600 15px/1.2 var(--body); letter-spacing: 0; }
 .section h3 { display: flex; align-items: center; gap: 10px; }
-.sec-avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; flex: none; border: 1px solid var(--line); }
+.sec-avatar { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; flex: none; border: 1px solid var(--line); }
 .avatar-pick { position: relative; flex: none; width: 36px; height: 36px; border-radius: 50%; overflow: hidden; display: grid; place-items: center; border: 1px dashed var(--muted); color: var(--muted); font-size: 18px; cursor: pointer; }
 .avatar-pick:hover { border-color: var(--ink); color: var(--ink); }
 .avatar-pick img { width: 100%; height: 100%; object-fit: cover; }
