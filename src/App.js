@@ -1186,7 +1186,7 @@ export default function App() {
         )}
 
         {!isPipeline && (
-        <section className="card today checklist" aria-label="Checklist" ref={checklistRef}>
+        <section className={'card today checklist' + (!editingTasks && tabTotal > 0 ? ' boxed' : '')} aria-label="Checklist" ref={checklistRef}>
           {(editingTasks || !isToday) && (
             <div className="today-head">
               <div className="head-status">{isToday ? 'Editing tasks' : `Past day · ${pretty(sel)}`}</div>
@@ -1696,6 +1696,7 @@ const CSS = `
   --ink: #10151C;
   --muted: #5A6472;
   --line: #D3DAE3;
+  --box-line: #CBD2DC;
   --divider: #E4E8EE; /* fainter lines between tasks and accounts */
   --accent: #2448F2;
   --accent-ink: #FFFFFF;
@@ -1714,7 +1715,7 @@ const CSS = `
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --ground: #141416; --surface: #141416; --ink: #F2F2F2; --muted: #97979C; --line: #2F2F34; --divider: #222226;
+    --ground: #141416; --surface: #141416; --ink: #F2F2F2; --muted: #97979C; --line: #2F2F34; --box-line: #38383E; --divider: #222226;
     --accent: #6F8CFF; --accent-ink: #000000; --accent-soft: #232A3E;
     --miss: #FF6B70; --miss-soft: #2A1112; --partial: #F0B547;
     --check: #FF1F45; --check-ink: #FFFFFF; --check-glow: 0 0 10px rgba(255, 31, 69, .55);
@@ -1919,12 +1920,13 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .section.all-done .section-head .count { color: var(--accent); }
 /* Each account's header shares the box with its tasks: same shade, no line under the header.
    Lines stay between tasks and between accounts. */
-.section .tasks { border-top: 0; padding-bottom: 14px; }
+.section .tasks { border-top: 0; }
 /* Account names a step bigger than the 17px task text. */
 .section .section-head h3 { font-size: 19px; }
 .section .section-head { background: none; border-top: 0; }
-/* A darker band between accounts so each one reads as its own group. */
-.section + .section::before { content: ''; display: block; height: 10px; background: var(--ground); border-top: 1px solid var(--divider); border-bottom: 1px solid var(--divider); }
+/* Each account is its own box, with space between boxes instead of an outer card. */
+.checklist.boxed { background: none; border: 0; border-radius: 0; overflow: visible; display: grid; gap: 14px; }
+.checklist.boxed .section { background: var(--surface); border: 1px solid var(--box-line); border-radius: 14px; overflow: hidden; }
 .section .tasks li:last-child .task-line { border-bottom: 0; }
 .task-editor .section-row { align-items: center; flex-wrap: wrap; }
 .section-row .section-input { flex: 1 1 160px; }
