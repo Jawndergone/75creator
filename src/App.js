@@ -1063,7 +1063,7 @@ export default function App() {
               return (
                 <div className={'section' + (n === list.length ? ' all-done' : '')} key={s.id}>
                   <div className="section-head">
-                    <h3>{s.label}</h3>
+                    <h3>{s.avatar && <img className="sec-avatar" src={s.avatar} alt="" />}{s.label}</h3>
                     <span className="count">{n}/{list.length}</span>
                   </div>
                   <ul className="tasks">
@@ -1227,6 +1227,25 @@ export default function App() {
 
 // The admin for your routine. Changes save as you type.
 // New tasks start counting today; removed tasks stop counting today; "today only" tasks count for today alone.
+// Center-crops a picture to a small square (shown as a circle) so it saves and syncs quickly.
+function squareThumb(file, size = 96) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const side = Math.min(img.width, img.height);
+      const cv = document.createElement('canvas');
+      cv.width = size;
+      cv.height = size;
+      cv.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+      URL.revokeObjectURL(url);
+      resolve(cv.toDataURL('image/png'));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That file couldn't be opened as a picture.")); };
+    img.src = url;
+  });
+}
+
 function TaskEditor({ tasks, sections, shown, tabId, today, onChange }) {
   const [drafts, setDrafts] = useState({});
   const [repeat, setRepeat] = useState({});
@@ -1271,6 +1290,12 @@ function TaskEditor({ tasks, sections, shown, tabId, today, onChange }) {
     setNewSection('');
   };
   const renameSection = (id, label) => onChange({ sections: sections.map((s) => (s.id === id ? { ...s, label } : s)) });
+  const setAvatar = (id, avatar) => onChange({ sections: sections.map((s) => (s.id === id ? { ...s, avatar } : s)) });
+  const pickAvatar = (id, e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (file) squareThumb(file).then((url) => setAvatar(id, url)).catch(() => {});
+  };
   const setTab = (id, tab) => onChange({ sections: sections.map((s) => (s.id === id ? { ...s, tab } : s)) });
   // Moves a section past its neighbour within this tab.
   const moveSection = (i, dir) => {
@@ -1299,6 +1324,13 @@ function TaskEditor({ tasks, sections, shown, tabId, today, onChange }) {
                 <button type="button" className="icon-btn small" aria-label={`Move ${s.label} section up`} disabled={si === 0} onClick={() => moveSection(si, -1)}>↑</button>
                 <button type="button" className="icon-btn small" aria-label={`Move ${s.label} section down`} disabled={si === shown.length - 1} onClick={() => moveSection(si, 1)}>↓</button>
               </div>
+              <label className="avatar-pick" title={s.avatar ? 'Change picture' : 'Add a picture'}>
+                {s.avatar ? <img src={s.avatar} alt="" /> : <span aria-hidden="true">+</span>}
+                <input type="file" accept="image/*" id={'avatar-' + s.id} aria-label={`Picture for ${s.label}`} onChange={(e) => pickAvatar(s.id, e)} />
+              </label>
+              {s.avatar && (
+                <button type="button" className="icon-btn small avatar-remove" aria-label={`Remove picture from ${s.label}`} onClick={() => setAvatar(s.id, null)}>×</button>
+              )}
               <input className="text section-input" id={'sec-' + s.id} maxLength={30} aria-label="Section name" value={s.label}
                 onChange={(e) => renameSection(s.id, e.target.value)}
                 onBlur={(e) => { if (!e.target.value.trim()) renameSection(s.id, 'Untitled'); }} />
@@ -1682,8 +1714,16 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .rules b { display: block; }
 .rules small { color: var(--muted); font-size: 14px; }
 .head-right { display: flex; align-items: center; gap: 12px; }
-.section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 14px 20px 8px; border-top: 1px solid var(--line); background: var(--ground); }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 20px 8px; border-top: 1px solid var(--line); background: var(--ground); }
 .section h3, .editor-section h3 { margin: 0; font: 600 15px/1.2 var(--body); letter-spacing: 0; }
+.section h3 { display: flex; align-items: center; gap: 10px; }
+.sec-avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; flex: none; border: 1px solid var(--line); }
+.avatar-pick { position: relative; flex: none; width: 36px; height: 36px; border-radius: 50%; overflow: hidden; display: grid; place-items: center; border: 1px dashed var(--muted); color: var(--muted); font-size: 18px; cursor: pointer; }
+.avatar-pick:hover { border-color: var(--ink); color: var(--ink); }
+.avatar-pick img { width: 100%; height: 100%; object-fit: cover; }
+.avatar-pick:has(img) { border-style: solid; border-color: var(--line); }
+.avatar-pick input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.avatar-remove { width: 22px; height: 22px; font-size: 14px; margin-left: -6px; }
 .section.all-done .section-head .count { color: var(--accent); }
 .section .tasks { border-top: 1px solid var(--line); }
 .task-editor .section-row { align-items: center; flex-wrap: wrap; }
