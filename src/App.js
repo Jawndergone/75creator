@@ -1527,7 +1527,7 @@ const CSS = `
 html, body, #root { background: var(--ground); }
 body { color: var(--ink); font: 16px/1.5 var(--body); }
 .app {
-  min-height: 100%;
+  min-height: 100%; overflow-x: clip;
   padding: 20px max(16px, env(safe-area-inset-right, 0px)) 64px max(16px, env(safe-area-inset-left, 0px));
 }
 .wrap { max-width: 640px; margin: 0 auto; display: grid; gap: 18px; }
@@ -1609,7 +1609,7 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 
 .sheet-backdrop { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: flex-end; background: rgba(4, 7, 12, .6); }
 .sheet {
-  width: min(440px, 100%); height: 100%; overflow-y: auto; overscroll-behavior: contain;
+  width: min(440px, 100%); height: 100%; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
   display: grid; align-content: start; gap: 24px;
   background: var(--ground); border-left: 1px solid var(--line);
   padding: calc(18px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) calc(32px + env(safe-area-inset-bottom, 0px)) 16px;
@@ -1754,6 +1754,9 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .task-editor .row { flex-wrap: nowrap; align-items: stretch; }
 .task-editor .text { flex: 1; min-width: 0; width: auto; }
 .task-editor .add-row { margin-top: 6px; }
+.task-editor .section-row { flex-wrap: wrap; }
+.task-editor .section-row .section-input { flex: 1 1 140px; }
+.wrap > *, .sheet > *, .sheet-group > *, .task-editor > *, .editor-section > * { min-width: 0; }
 .order { display: grid; gap: 2px; }
 .hint { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
 .icon-btn { flex: none; width: 42px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 20px; line-height: 1; }
