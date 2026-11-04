@@ -746,41 +746,13 @@ const GearIcon = () => (
   </svg>
 );
 
-const ClockIcon = () => (
-  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-    <circle cx="8" cy="8" r="6.25" stroke="currentColor" strokeWidth="1.5" />
-    <path d="M8 4.75V8l2.25 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-// A checklist row with the time it was done (or a start–end range), editable inline.
-function TaskLine({ task, checked, time, open, onToggle, onOpen, onClose, onSetTime }) {
-  const label = timeLabel(time);
+// A checklist row; checking it off still records the time (shown in the calendar log).
+function TaskLine({ task, checked, onToggle }) {
   return (
     <li>
       <div className="task-line">
         <CheckRow label={task.label} checked={checked} onToggle={onToggle} />
-        <button type="button" className={'time-chip' + (label ? '' : ' empty')} onClick={open ? onClose : onOpen}
-          aria-label={label ? `Edit time for ${task.label}: ${label}` : `Add a time for ${task.label}`} aria-expanded={open}>
-          {label || <ClockIcon />}
-        </button>
       </div>
-      {open && (
-        <div className="time-edit">
-          <label htmlFor={'start-' + task.id}>Start
-            <input className="text" type="time" id={'start-' + task.id} value={(time && time.start) || ''}
-              onChange={(e) => onSetTime('start', e.target.value)} />
-          </label>
-          <label htmlFor={'end-' + task.id}>End
-            <input className="text" type="time" id={'end-' + task.id} value={(time && time.end) || ''}
-              onChange={(e) => onSetTime('end', e.target.value)} />
-          </label>
-          <div className="row">
-            <button className="btn" type="button" onClick={() => { onSetTime('start', ''); onSetTime('end', ''); }}>Clear</button>
-            <button className="btn primary" type="button" onClick={onClose}>Done</button>
-          </div>
-        </div>
-      )}
     </li>
   );
 }
@@ -816,7 +788,6 @@ export default function App() {
   const [selected, setSelected] = useState(todayStr());
   const [setupOpen, setSetupOpen] = useState(false);
   const [editingTasks, setEditingTasks] = useState(false);
-  const [timeOpen, setTimeOpen] = useState(null);
   const [activeTab, setActiveTab] = useState('main');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [page, setPage] = useState('tasks');
@@ -1077,13 +1048,6 @@ export default function App() {
     }
     return { ...l, times };
   });
-  const setTaskTime = (id, field, value) => updateLog(sel, (l) => {
-    const times = { ...(l.times || {}) };
-    const cur = { ...(times[id] || {}) };
-    if (value) cur[field] = value; else delete cur[field];
-    if (cur.start || cur.end) times[id] = cur; else delete times[id];
-    return { ...l, times };
-  });
 
   const selectDay = (date) => {
     setSelected(date);
@@ -1138,7 +1102,7 @@ export default function App() {
             return (
               <button key={x.id} type="button" aria-current={x.id === tab ? 'page' : undefined}
                 className={'tab' + (x.id === tab ? ' on' : '') + (total && n === total ? ' complete' : '')}
-                onClick={() => { setActiveTab(x.id); setTimeOpen(null); window.scrollTo({ top: 0 }); }}>
+                onClick={() => { setActiveTab(x.id); window.scrollTo({ top: 0 }); }}>
                 <span>{x.label}</span>
                 {total > 0 && <span className="tab-count">{n}/{total}</span>}
               </button>
@@ -1227,12 +1191,7 @@ export default function App() {
                         key={task.id}
                         task={task}
                         checked={log.done.includes(task.id)}
-                        time={log.times && log.times[task.id]}
-                        open={timeOpen === sel + ':' + task.id}
                         onToggle={() => toggleTask(task.id)}
-                        onOpen={() => setTimeOpen(sel + ':' + task.id)}
-                        onClose={() => setTimeOpen(null)}
-                        onSetTime={(field, value) => setTaskTime(task.id, field, value)}
                       />
                     ))}
                   </ul>
@@ -1852,16 +1811,6 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .task[aria-pressed="true"] .label { color: var(--muted); }
 .task-line { display: flex; align-items: center; border-bottom: 1px solid var(--divider); }
 .task-line .task { flex: 1; min-width: 0; border-bottom: 0; padding-right: 8px; }
-.time-chip { flex: none; margin-right: 16px; font: 500 12px/1 var(--mono); color: var(--ink); background: var(--ground); border: 1px solid var(--line); border-radius: 99px; padding: 7px 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.time-chip:hover { border-color: var(--muted); }
-.time-chip.empty { color: var(--muted); background: none; border-color: transparent; padding: 7px; opacity: .55; }
-.time-chip.empty:hover, .time-chip.empty[aria-expanded="true"] { opacity: 1; border-color: var(--line); }
-.time-chip svg { width: 15px; height: 15px; display: block; }
-.time-chip.static { margin-right: 0; color: var(--muted); }
-.time-chip.static:hover { border-color: var(--line); }
-.time-edit { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; padding: 12px 20px 14px 60px; background: var(--ground); border-bottom: 1px solid var(--line); }
-.time-edit label { display: grid; gap: 6px; font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
-.time-edit .text { width: auto; padding: 7px 10px; font: 400 15px/1.2 var(--body); background: var(--surface); text-transform: none; letter-spacing: 0; color: var(--ink); }
 .note-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; padding: 12px 14px; background: var(--ground); border: 1px solid var(--line); border-radius: 10px; }
 
 .empty { color: var(--muted); margin: 0; font-size: 15px; }
@@ -1929,6 +1878,11 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .checklist.boxed .section { background: var(--surface); border: 1px solid var(--box-line); border-radius: 14px; overflow: hidden; }
 /* Test: no side edges; top and bottom lines run to the edges of the screen, content stays where it was. */
 .checklist.boxed .section { border-left: 0; border-right: 0; border-radius: 0; margin-inline: calc(50% - 50vw); padding-inline: calc(50vw - 50%); }
+/* One line between accounts, sitting in the middle of the gap. */
+.checklist.boxed { gap: 0; }
+.checklist.boxed .section:not(:last-child) { border-bottom: 0; }
+.checklist.boxed .section + .section { margin-top: 7px; padding-top: 7px; }
+.checklist.boxed .section:first-child { border-top: 0; }
 .section .tasks li:last-child .task-line { border-bottom: 0; }
 .task-editor .section-row { align-items: center; flex-wrap: wrap; }
 .section-row .section-input { flex: 1 1 160px; }
