@@ -214,11 +214,37 @@ function outreachOf(data) {
   };
 }
 
-function OutreachList({ outreach, today, onChange }) {
+const CopyIcon = () => (
+  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <rect x="5.25" y="5.25" width="8" height="8" rx="1.75" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M10.75 3.5v-.25A1.5 1.5 0 0 0 9.25 1.75h-5.5a2 2 0 0 0-2 2v5.5a1.5 1.5 0 0 0 1.5 1.5h.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+);
+
+// Copies text when the Clipboard API isn't available (older iOS home-screen apps).
+function copyFallback(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+function OutreachList({ outreach, today, editing, onDoneEditing, onChange }) {
   const { cats, brands } = outreach;
-  const [editing, setEditing] = useState(false);
   const [drafts, setDrafts] = useState({});
   const [newCat, setNewCat] = useState('');
+  const [addingTo, setAddingTo] = useState(null);
   const [armed, setArmed] = useState(null);
   useEffect(() => {
     if (!armed) return;
@@ -227,6 +253,25 @@ function OutreachList({ outreach, today, onChange }) {
   }, [armed]);
 
   const set = (changes) => onChange({ ...outreach, ...changes });
+
+  // The saved outreach message: one tap copies it; it's written or changed in Edit pipeline.
+  const pitch = outreach.pitch || '';
+  const [pitchDraft, setPitchDraft] = useState(pitch);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { setPitchDraft(pitch); }, [editing, pitch]);
+  useEffect(() => {
+    if (!copied) return;
+    const id = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(id);
+  }, [copied]);
+  const copyPitch = () => {
+    const done = () => setCopied(true);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(pitch).then(done, () => { if (copyFallback(pitch)) done(); });
+    } else if (copyFallback(pitch)) done();
+  };
+  const showPitchEditor = editing || !pitch;
+
   const toggle = (b) => set({ brands: brands.map((x) => (x.id !== b.id ? x : x.done ? { ...x, done: false, doneOn: null } : { ...x, done: true, doneOn: today })) });
   const addBrand = (catId) => {
     const brand = (drafts[catId] || '').trim();
@@ -249,19 +294,34 @@ function OutreachList({ outreach, today, onChange }) {
     setArmed(null);
   };
 
-  const reached = brands.filter((b) => b.done).length;
-
   return (
     <>
-      <div className="pipe-head">
-        <span className="eyebrow">{brands.length ? `Reached out to ${reached} of ${brands.length} brands` : 'Brand outreach'}</span>
-        {cats.length > 0 && (
-          <button className={'btn small-btn' + (editing ? ' primary' : '')} type="button" onClick={() => setEditing(!editing)}>{editing ? 'Done' : 'Edit'}</button>
-        )}
-      </div>
+      {editing && (
+        <div className="pipe-head">
+          <span className="head-status">Editing pipeline</span>
+          <button className="btn primary small-btn" type="button" onClick={onDoneEditing}>Done</button>
+        </div>
+      )}
+
+      {showPitchEditor ? (
+        <div className="card pitch-edit">
+          <label className="eyebrow" htmlFor="pitchText">Outreach message</label>
+          <textarea className="text" id="pitchText" value={pitchDraft} onChange={(e) => setPitchDraft(e.target.value)}
+            placeholder="Paste the message you send brands. You'll get a one-tap Copy button for it." />
+          <div className="row">
+            <button className="btn primary" type="button" disabled={pitchDraft.trim() === pitch.trim()}
+              onClick={() => set({ pitch: pitchDraft.trim() })}>Save message</button>
+          </div>
+        </div>
+      ) : (
+        <div className="pipe-copy-row">
+          <button type="button" className={'plus-btn copy-btn' + (copied ? ' copied' : '')} aria-label={copied ? 'Message copied' : 'Copy outreach message'}
+            onClick={copyPitch}>{copied ? <CheckIcon /> : <CopyIcon />}</button>
+        </div>
+      )}
 
       {cats.length > 0 && (
-        <section className="card today checklist boxed" aria-label="Brand outreach">
+        <section className="card today checklist boxed pipeline-list" aria-label="Brand outreach">
           {cats.map((c) => {
             const list = brands.filter((b) => b.cat === c.id);
             return (
@@ -273,10 +333,13 @@ function OutreachList({ outreach, today, onChange }) {
                   ) : (
                     <h3>{c.label}</h3>
                   )}
-                  {editing && (
+                  {editing ? (
                     <button type="button" className={'btn danger small-btn' + (armed === c.id ? ' armed' : '')} onClick={() => deleteCat(c)}>
                       {armed === c.id ? (list.length ? `Delete + ${list.length} brands?` : 'Delete?') : 'Delete'}
                     </button>
+                  ) : (
+                    <button type="button" className="plus-btn" aria-label={addingTo === c.id ? 'Close' : `Add a ${c.label} brand`} aria-expanded={addingTo === c.id}
+                      onMouseDown={(e) => e.preventDefault()} onClick={() => setAddingTo(addingTo === c.id ? null : c.id)}>{addingTo === c.id ? '×' : '+'}</button>
                   )}
                 </div>
                 <ul className="tasks">
@@ -296,12 +359,17 @@ function OutreachList({ outreach, today, onChange }) {
                     </li>
                   ))}
                 </ul>
+                {addingTo === c.id && (
                 <div className="pipe-add">
-                  <input className="text" id={'add-' + c.id} maxLength={60} placeholder={`+ Add a ${c.label} brand`} aria-label={`New ${c.label} brand`}
-                    value={drafts[c.id] || ''} onChange={(e) => { const v = e.target.value; setDrafts((d) => ({ ...d, [c.id]: v })); }}
-                    onKeyDown={(e) => { if (e.key === 'Enter') addBrand(c.id); }} />
-                  {(drafts[c.id] || '').trim() && <button className="btn primary small-btn" type="button" onClick={() => addBrand(c.id)}>Add</button>}
+                    <>
+                      <input className="text" id={'add-' + c.id} maxLength={60} autoFocus placeholder="Brand name" aria-label={`New ${c.label} brand`}
+                        value={drafts[c.id] || ''} onChange={(e) => { const v = e.target.value; setDrafts((d) => ({ ...d, [c.id]: v })); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') addBrand(c.id); if (e.key === 'Escape') setAddingTo(null); }}
+                        onBlur={() => { if (!(drafts[c.id] || '').trim()) setAddingTo(null); }} />
+                      {(drafts[c.id] || '').trim() && <button className="btn primary small-btn" type="button" onClick={() => addBrand(c.id)}>Add</button>}
+                    </>
                 </div>
+                )}
               </div>
             );
           })}
@@ -737,6 +805,7 @@ export default function App() {
   const [selected, setSelected] = useState(todayStr());
   const [setupOpen, setSetupOpen] = useState(false);
   const [editingTasks, setEditingTasks] = useState(false);
+  const [editingPipeline, setEditingPipeline] = useState(false);
   const [activeTab, setActiveTab] = useState('main');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [page, setPage] = useState('tasks');
@@ -1051,7 +1120,7 @@ export default function App() {
             return (
               <button key={x.id} type="button" aria-current={x.id === tab ? 'page' : undefined}
                 className={'tab' + (x.id === tab ? ' on' : '') + (total && n === total ? ' complete' : '')}
-                onClick={() => { setActiveTab(x.id); window.scrollTo({ top: 0 }); }}>
+                onClick={() => { setActiveTab(x.id); setEditingPipeline(false); window.scrollTo({ top: 0 }); }}>
                 <span>{x.label}</span>
                 {total > 0 && <span className="tab-count">{n}/{total}</span>}
               </button>
@@ -1089,6 +1158,8 @@ export default function App() {
           <OutreachList
             outreach={outreachOf(data)}
             today={t}
+            editing={editingPipeline}
+            onDoneEditing={() => setEditingPipeline(false)}
             onChange={(outreach) => setData((prev) => ({ ...prev, outreach }))}
           />
         )}
@@ -1258,6 +1329,12 @@ export default function App() {
                     onClick={() => { closeSettings(); setEditingTasks(true); setSelected(t); if (isPipeline) setActiveTab('main'); window.scrollTo({ top: 0 }); }}>
                     <b>Edit tasks</b>
                     <span className="sub">Add, rename or move tasks and sections on the {tabs.find((x) => x.id === tab).label} tab</span>
+                    <span className="chev" aria-hidden="true">›</span>
+                  </button>
+                  <button className="menu-item" type="button"
+                    onClick={() => { closeSettings(); setEditingPipeline(true); setActiveTab(PIPELINE_TAB); window.scrollTo({ top: 0 }); }}>
+                    <b>Edit pipeline</b>
+                    <span className="sub">Change your outreach message, or rename and delete categories and brands</span>
                     <span className="chev" aria-hidden="true">›</span>
                   </button>
                   <button className="menu-item" type="button" onClick={() => setSetupOpen(true)}>
@@ -1943,9 +2020,17 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .pipe-cat-input { flex: 1; min-width: 0; font-size: 19px !important; padding: 6px 10px; }
 .pipe-brand-input { flex: 1; min-width: 0; margin: 8px 0 8px 40px; padding: 8px 10px; }
 .pipe-x { height: 36px; margin: 0 0 0 8px; }
-.pipe-add { display: flex; gap: 8px; align-items: center; padding: 2px 20px 12px 60px; }
+.pipe-add { display: flex; gap: 14px; align-items: center; padding: 4px 20px 12px; min-height: 44px; }
 .pipe-add .text { flex: 1; min-width: 0; background: none; border: 0; padding: 8px 0; font-size: 15px; }
 .pipe-add .text:focus { outline: none; border-bottom: 1px solid var(--line); }
+.pipeline-list .section:last-child { border-bottom: 0; }
+.pipeline-list .section-head .plus-btn { flex: none; }
+.pitch-edit { display: grid; gap: 10px; padding: 16px; }
+.pitch-edit textarea { min-height: 120px; resize: vertical; line-height: 1.45; font-size: 15px; }
+.pipe-copy-row { display: flex; justify-content: flex-end; padding: 0 20px; margin-bottom: -14px; }
+.copy-btn svg { width: 15px; height: 15px; display: block; }
+.copy-btn.copied { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.copy-btn.copied svg path { stroke: currentColor; }
 .pipe-new { display: flex; gap: 8px; flex-wrap: wrap; }
 .pipe-new .text { flex: 1 1 200px; width: auto; }
 .pipe-hint { margin-top: -6px; }
