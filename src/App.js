@@ -1088,16 +1088,14 @@ export default function App() {
           )}
         </section>
 
-        {isMain && (<>
+        {tab === cardTab && (<>
         <NotesCard
           key={sel}
           note={log.note || ''}
           dateLabel={isToday ? 'Today · ' + pretty(sel) : pretty(sel)}
           onSave={(note) => updateLog(sel, (l) => ({ ...l, note }))}
         />
-        </>)}
 
-        {tab === cardTab && (<>
         <HorizonCard
           items={horizon}
           today={t}
