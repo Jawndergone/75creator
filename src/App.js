@@ -197,45 +197,6 @@ function writeBackup(userId, data) {
   }
 }
 
-// The day's notes: write, then Save; saved notes show as text until you tap Edit.
-function NotesCard({ note, dateLabel, onSave }) {
-  const [editing, setEditing] = useState(!note);
-  const [draft, setDraft] = useState(note);
-  const changed = draft !== note;
-
-  const save = () => {
-    onSave(draft.trim() ? draft : '');
-    setEditing(!draft.trim());
-  };
-
-  return (
-    <section className="card notes" aria-label="Ideas">
-      <div className="notes-head">
-        <div>
-          <div className="eyebrow">{dateLabel}</div>
-          <h2>Ideas</h2>
-        </div>
-        {!editing && <button className="btn" type="button" onClick={() => setEditing(true)}>Edit</button>}
-      </div>
-      {editing ? (
-        <>
-          <textarea className="text" id="note" value={draft} aria-label="Ideas for this day"
-            placeholder="Challenges, insights, breakthroughs, or anything you want to remember."
-            onChange={(e) => setDraft(e.target.value)} />
-          <div className="row notes-actions">
-            <button className="btn primary" type="button" onClick={save} disabled={!changed}>Save</button>
-            {note && (
-              <button className="btn" type="button" onClick={() => { setDraft(note); setEditing(false); }}>Cancel</button>
-            )}
-            {changed && <span className="hint">Not saved yet</span>}
-          </div>
-        </>
-      ) : (
-        <p className="note-text">{note}</p>
-      )}
-    </section>
-  );
-}
 
 // ---- brand deals ----
 const DEAL_STATUS = [
@@ -1031,7 +992,7 @@ export default function App() {
 
         {tab === cardTab && <TodayCard items={dueItems} today={t} onUpdate={updateHorizon} onAdd={addTodayItem} />}
 
-        <section className="card today" aria-label="Checklist" ref={checklistRef}>
+        <section className="card today checklist" aria-label="Checklist" ref={checklistRef}>
           {(editingTasks || !isToday) && (
             <div className="today-head">
               <div className="head-status">{isToday ? 'Editing tasks' : `Past day · ${pretty(sel)}`}</div>
@@ -1064,7 +1025,7 @@ export default function App() {
               return (
                 <div className={'section' + (n === list.length ? ' all-done' : '')} key={s.id}>
                   <div className="section-head">
-                    <h3>{s.avatar && <img className="sec-avatar" src={s.avatar} alt="" />}{s.label}</h3>
+                    <h3>{s.avatar ? <img className="sec-avatar" src={s.avatar} alt="" /> : <span className="sec-avatar-slot" aria-hidden="true" />}{s.label}</h3>
                     <span className="count">{n}/{list.length}</span>
                   </div>
                   <ul className="tasks">
@@ -1089,13 +1050,6 @@ export default function App() {
         </section>
 
         {tab === cardTab && (<>
-        <NotesCard
-          key={sel}
-          note={log.note || ''}
-          dateLabel={isToday ? 'Today · ' + pretty(sel) : pretty(sel)}
-          onSave={(note) => updateLog(sel, (l) => ({ ...l, note }))}
-        />
-
         <HorizonCard
           items={horizon}
           today={t}
@@ -1539,6 +1493,52 @@ function Setup({ data, today, onCancel, onSave, onReset }) {
   );
 }
 
+// ---- checklist theme: every size, color and gap for the main task list ----
+// Sizes are in points (1pt = 1px on iPhone). Dark colors are the main look;
+// light colors are used when the phone is in light mode.
+const LIST_THEME = {
+  headerSize: 19, headerWeight: 600, headerTracking: -0.3,
+  countSize: 13,
+  taskSize: 15,
+  timeSize: 12,
+  clockSize: 15,
+  firstHeaderGap: 22, // above the first account header
+  headerGap: 32,      // above every other account header
+  headerToTask: 4,    // between a header and its first task
+  rowHeight: 40,
+  padX: 18,
+  padBottom: 12,
+  avatar: 22,         // header picture; also the checkbox column width
+  check: 18,
+  columnGap: 12,      // between the avatar/checkbox column and the text
+  dark: { header: '#FFFFFF', count: '#6E6E74', task: '#C8C8CC', taskDone: '#5F5F65', meta: '#4A4A50' },
+  light: { header: '#0B0B0C', count: '#8A8A90', task: '#3A3A40', taskDone: '#A5A5AB', meta: '#A0A0A6' },
+};
+const listColors = (c) => `--cl-header: ${c.header}; --cl-count: ${c.count}; --cl-task: ${c.task}; --cl-task-done: ${c.taskDone}; --cl-meta: ${c.meta};`;
+const T = LIST_THEME;
+const LIST_CSS = `
+:root { ${listColors(T.light)} }
+@media (prefers-color-scheme: dark) { :root { ${listColors(T.dark)} } }
+.checklist { padding-bottom: ${T.padBottom}px; }
+.checklist .section-head { padding: ${T.headerGap}px ${T.padX}px ${T.headerToTask}px; border: 0; background: none; }
+.checklist > .section:first-child .section-head, .checklist > .today-head + .section .section-head { padding-top: ${T.firstHeaderGap}px; }
+.checklist .section h3 { gap: ${T.columnGap}px; font: ${T.headerWeight} ${T.headerSize}px/1.2 var(--body); letter-spacing: ${T.headerTracking}px; color: var(--cl-header); }
+.checklist .sec-avatar, .checklist .sec-avatar-slot { width: ${T.avatar}px; height: ${T.avatar}px; border: 0; flex: none; }
+.checklist .section-head .count { font: 400 ${T.countSize}px/1 var(--body); color: var(--cl-count); }
+.checklist .section.all-done .section-head .count { color: var(--accent); }
+.checklist .tasks, .checklist .section .tasks { border: 0; }
+.checklist .task-line { height: ${T.rowHeight}px; padding: 0 ${T.padX}px; border: 0; gap: 8px; }
+.checklist .task-line .task { height: 100%; padding: 0; gap: ${T.columnGap}px; border: 0; font: 400 ${T.taskSize}px/1.25 var(--body); color: var(--cl-task); }
+.checklist .task:hover { background: none; }
+.checklist .task .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.checklist .box { width: ${T.check}px; height: ${T.check}px; margin: 0 ${(T.avatar - T.check) / 2}px; border-width: 1.5px; }
+.checklist .box svg { width: 12px; height: 12px; }
+.checklist .task[aria-pressed="true"] .label { color: var(--cl-task-done); }
+.checklist .time-chip, .checklist .time-chip.empty { margin: 0; padding: 0; border: 0; background: none; opacity: 1; font: 400 ${T.timeSize}px/1 var(--body); color: var(--cl-meta); }
+.checklist .time-chip svg { width: ${T.clockSize}px; height: ${T.clockSize}px; }
+.checklist .time-edit { border: 0; border-radius: 10px; margin: 0 ${T.padX}px 6px; padding: 12px 14px; }
+`;
+
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800;900&family=Instrument+Sans:wght@400;500;600&display=swap');
 
@@ -1712,11 +1712,6 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .time-edit { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; padding: 12px 20px 14px 60px; background: var(--ground); border-bottom: 1px solid var(--line); }
 .time-edit label { display: grid; gap: 6px; font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
 .time-edit .text { width: auto; padding: 7px 10px; font: 400 15px/1.2 var(--body); background: var(--surface); text-transform: none; letter-spacing: 0; color: var(--ink); }
-.notes { padding: 18px 20px 20px; display: grid; gap: 12px; }
-.notes-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
-.notes h2 { font: 600 15px/1.2 var(--body); letter-spacing: 0; margin-top: 4px; }
-.notes textarea { min-height: 120px; resize: vertical; line-height: 1.5; }
-.notes-actions { align-items: center; }
 .note-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; padding: 12px 14px; background: var(--ground); border: 1px solid var(--line); border-radius: 10px; }
 
 .empty { color: var(--muted); margin: 0; font-size: 15px; }
@@ -1890,4 +1885,4 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .deal-due-input { flex: 1 1 160px; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
-`;
+` + LIST_CSS;
