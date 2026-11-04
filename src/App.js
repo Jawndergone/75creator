@@ -746,13 +746,41 @@ const GearIcon = () => (
   </svg>
 );
 
-// A checklist row; checking it off still records the time it was done (shown in the calendar log).
-function TaskLine({ task, checked, onToggle }) {
+const ClockIcon = () => (
+  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <circle cx="8" cy="8" r="6.25" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M8 4.75V8l2.25 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+// A checklist row with the time it was done (or a start–end range), editable inline.
+function TaskLine({ task, checked, time, open, onToggle, onOpen, onClose, onSetTime }) {
+  const label = timeLabel(time);
   return (
     <li>
       <div className="task-line">
         <CheckRow label={task.label} checked={checked} onToggle={onToggle} />
+        <button type="button" className={'time-chip' + (label ? '' : ' empty')} onClick={open ? onClose : onOpen}
+          aria-label={label ? `Edit time for ${task.label}: ${label}` : `Add a time for ${task.label}`} aria-expanded={open}>
+          {label || <ClockIcon />}
+        </button>
       </div>
+      {open && (
+        <div className="time-edit">
+          <label htmlFor={'start-' + task.id}>Start
+            <input className="text" type="time" id={'start-' + task.id} value={(time && time.start) || ''}
+              onChange={(e) => onSetTime('start', e.target.value)} />
+          </label>
+          <label htmlFor={'end-' + task.id}>End
+            <input className="text" type="time" id={'end-' + task.id} value={(time && time.end) || ''}
+              onChange={(e) => onSetTime('end', e.target.value)} />
+          </label>
+          <div className="row">
+            <button className="btn" type="button" onClick={() => { onSetTime('start', ''); onSetTime('end', ''); }}>Clear</button>
+            <button className="btn primary" type="button" onClick={onClose}>Done</button>
+          </div>
+        </div>
+      )}
     </li>
   );
 }
@@ -788,6 +816,7 @@ export default function App() {
   const [selected, setSelected] = useState(todayStr());
   const [setupOpen, setSetupOpen] = useState(false);
   const [editingTasks, setEditingTasks] = useState(false);
+  const [timeOpen, setTimeOpen] = useState(null);
   const [activeTab, setActiveTab] = useState('main');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [page, setPage] = useState('tasks');
@@ -1048,6 +1077,13 @@ export default function App() {
     }
     return { ...l, times };
   });
+  const setTaskTime = (id, field, value) => updateLog(sel, (l) => {
+    const times = { ...(l.times || {}) };
+    const cur = { ...(times[id] || {}) };
+    if (value) cur[field] = value; else delete cur[field];
+    if (cur.start || cur.end) times[id] = cur; else delete times[id];
+    return { ...l, times };
+  });
 
   const selectDay = (date) => {
     setSelected(date);
@@ -1102,7 +1138,7 @@ export default function App() {
             return (
               <button key={x.id} type="button" aria-current={x.id === tab ? 'page' : undefined}
                 className={'tab' + (x.id === tab ? ' on' : '') + (total && n === total ? ' complete' : '')}
-                onClick={() => { setActiveTab(x.id); window.scrollTo({ top: 0 }); }}>
+                onClick={() => { setActiveTab(x.id); setTimeOpen(null); window.scrollTo({ top: 0 }); }}>
                 <span>{x.label}</span>
                 {total > 0 && <span className="tab-count">{n}/{total}</span>}
               </button>
@@ -1183,7 +1219,7 @@ export default function App() {
               return (
                 <div className={'section' + (n === list.length ? ' all-done' : '')} key={s.id}>
                   <div className="section-head">
-                    <h3>{s.avatar ? <img className="sec-avatar" src={s.avatar} alt="" /> : <span className="sec-avatar-slot" aria-hidden="true" />}{s.label}</h3>
+                    <h3>{s.avatar && <img className="sec-avatar" src={s.avatar} alt="" />}{s.label}</h3>
                     <span className="count">{n}/{list.length}</span>
                   </div>
                   <ul className="tasks">
@@ -1192,7 +1228,12 @@ export default function App() {
                         key={task.id}
                         task={task}
                         checked={log.done.includes(task.id)}
+                        time={log.times && log.times[task.id]}
+                        open={timeOpen === sel + ':' + task.id}
                         onToggle={() => toggleTask(task.id)}
+                        onOpen={() => setTimeOpen(sel + ':' + task.id)}
+                        onClose={() => setTimeOpen(null)}
+                        onSetTime={(field, value) => setTaskTime(task.id, field, value)}
                       />
                     ))}
                   </ul>
@@ -1647,47 +1688,6 @@ function Setup({ data, today, onCancel, onSave, onReset }) {
   );
 }
 
-// ---- checklist theme: every size, color and gap for the main task list ----
-// Sizes are in points (1pt = 1px on iPhone). Dark colors are the main look;
-// light colors are used when the phone is in light mode.
-const LIST_THEME = {
-  headerSize: 19, headerWeight: 600, headerTracking: -0.3,
-  countSize: 13,
-  taskSize: 15,
-  headerPadTop: 14,   // inside each account header band
-  headerPadBottom: 10,
-  rowHeight: 40,
-  sectionEnd: 14,     // space under each account's last task
-  padX: 18,
-  avatar: 22,         // header picture; also the checkbox column width
-  check: 18,
-  columnGap: 12,      // between the avatar/checkbox column and the text
-  dark: { header: '#FFFFFF', count: '#6E6E74', task: '#C8C8CC', taskDone: '#5F5F65', meta: '#4A4A50' },
-  light: { header: '#0B0B0C', count: '#8A8A90', task: '#3A3A40', taskDone: '#A5A5AB', meta: '#A0A0A6' },
-};
-const listColors = (c) => `--cl-header: ${c.header}; --cl-count: ${c.count}; --cl-task: ${c.task}; --cl-task-done: ${c.taskDone}; --cl-meta: ${c.meta};`;
-const T = LIST_THEME;
-// Header bands sit on the darker ground with divider lines; task rows sit on the card.
-const LIST_CSS = `
-:root { ${listColors(T.light)} }
-@media (prefers-color-scheme: dark) { :root { ${listColors(T.dark)} } }
-.checklist .section-head { padding: ${T.headerPadTop}px ${T.padX}px ${T.headerPadBottom}px; }
-.checklist .section h3 { gap: ${T.columnGap}px; font: ${T.headerWeight} ${T.headerSize}px/1.2 var(--body); letter-spacing: ${T.headerTracking}px; color: var(--cl-header); }
-.checklist .sec-avatar, .checklist .sec-avatar-slot { width: ${T.avatar}px; height: ${T.avatar}px; flex: none; }
-.checklist .section-head .count { font: 400 ${T.countSize}px/1 var(--body); color: var(--cl-count); }
-.checklist .section.all-done .section-head .count { color: var(--accent); }
-.checklist .task-line { height: ${T.rowHeight}px; padding: 0 ${T.padX}px; gap: 8px; }
-.checklist .task-line .task { height: 100%; padding: 0; gap: ${T.columnGap}px; font: 400 ${T.taskSize}px/1.25 var(--body); color: var(--cl-task); }
-.checklist .task-line:hover { background: var(--ground); }
-.checklist .task:hover { background: none; }
-.checklist .task .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.checklist .box { width: ${T.check}px; height: ${T.check}px; margin: 0 ${(T.avatar - T.check) / 2}px; border-width: 1.5px; }
-.checklist .box svg { width: 12px; height: 12px; }
-.checklist .task[aria-pressed="true"] .label { color: var(--cl-task-done); }
-.checklist .section .tasks { padding-bottom: ${T.sectionEnd}px; }
-.checklist .tasks li:last-child .task-line { border-bottom: 0; }
-`;
-
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800;900&family=Instrument+Sans:wght@400;500;600&display=swap');
 
@@ -1851,6 +1851,16 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .task[aria-pressed="true"] .label { color: var(--muted); }
 .task-line { display: flex; align-items: center; border-bottom: 1px solid var(--line); }
 .task-line .task { flex: 1; min-width: 0; border-bottom: 0; padding-right: 8px; }
+.time-chip { flex: none; margin-right: 16px; font: 500 12px/1 var(--mono); color: var(--ink); background: var(--ground); border: 1px solid var(--line); border-radius: 99px; padding: 7px 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.time-chip:hover { border-color: var(--muted); }
+.time-chip.empty { color: var(--muted); background: none; border-color: transparent; padding: 7px; opacity: .55; }
+.time-chip.empty:hover, .time-chip.empty[aria-expanded="true"] { opacity: 1; border-color: var(--line); }
+.time-chip svg { width: 15px; height: 15px; display: block; }
+.time-chip.static { margin-right: 0; color: var(--muted); }
+.time-chip.static:hover { border-color: var(--line); }
+.time-edit { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; padding: 12px 20px 14px 60px; background: var(--ground); border-bottom: 1px solid var(--line); }
+.time-edit label { display: grid; gap: 6px; font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.time-edit .text { width: auto; padding: 7px 10px; font: 400 15px/1.2 var(--body); background: var(--surface); text-transform: none; letter-spacing: 0; color: var(--ink); }
 .note-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; padding: 12px 14px; background: var(--ground); border: 1px solid var(--line); border-radius: 10px; }
 
 .empty { color: var(--muted); margin: 0; font-size: 15px; }
@@ -2035,4 +2045,4 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .deal-due-input { flex: 1 1 160px; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
-` + LIST_CSS;
+`;
