@@ -174,6 +174,27 @@ function migrateOldRow(row) {
   return data;
 }
 
+// ---- syncing between devices ----
+// Combines another device's saved data with this device's unsaved changes. Anything this
+// device changed since it last synced (compared with \`base\`) wins; everything else comes
+// from the server. Days in the log and challenge fields merge one level deeper.
+function mergeData(server, local, base) {
+  if (!base) return local;
+  const changed = (a, b, k) => a[k] !== (b || {})[k];
+  const out = { ...server };
+  Object.keys(local).forEach((k) => {
+    if (!changed(local, base, k)) return;
+    if ((k === 'logs' || k === 'challenge') && server[k] && base[k]) {
+      const merged = { ...server[k] };
+      Object.keys(local[k]).forEach((kk) => { if (changed(local[k], base[k], kk)) merged[kk] = local[k][kk]; });
+      out[k] = merged;
+    } else {
+      out[k] = local[k];
+    }
+  });
+  return out;
+}
+
 // ---- backup on this device ----
 // A copy of the latest saved data, used if the server copy is ever overwritten by an old version of the app.
 const backupKey = (userId) => '75creator-backup-' + userId;
@@ -272,11 +293,11 @@ function OutreachList({ outreach, today, editing, onDoneEditing, onChange }) {
   };
   const showPitchEditor = editing || !pitch;
 
-  const toggle = (b) => set({ brands: brands.map((x) => (x.id !== b.id ? x : x.done ? { ...x, done: false, doneOn: null } : { ...x, done: true, doneOn: today })) });
+  const toggle = (b) => set({ brands: brands.map((x) => (x.id !== b.id ? x : x.done ? { ...x, done: false, doneOn: null, doneAt: null } : { ...x, done: true, doneOn: today, doneAt: nowHM() })) });
   const addBrand = (catId) => {
     const brand = (drafts[catId] || '').trim();
     if (!brand) return;
-    set({ brands: [...brands, { id: uid(), cat: catId, brand, done: false, added: today }] });
+    set({ brands: [...brands, { id: uid(), cat: catId, brand, done: false, added: today, addedAt: nowHM() }] });
     setDrafts((d) => ({ ...d, [catId]: '' }));
   };
   const removeBrand = (id) => set({ brands: brands.filter((x) => x.id !== id) });
@@ -284,7 +305,7 @@ function OutreachList({ outreach, today, editing, onDoneEditing, onChange }) {
   const addCat = () => {
     const label = newCat.trim();
     if (!label) return;
-    set({ cats: [...cats, { id: uid(), label }] });
+    set({ cats: [...cats, { id: uid(), label, added: today, addedAt: nowHM() }] });
     setNewCat('');
   };
   const renameCat = (id, label) => set({ cats: cats.map((c) => (c.id === id ? { ...c, label } : c)) });
@@ -460,7 +481,7 @@ function DealsCard({ deals, today, onChange }) {
   const add = () => {
     const b = brand.trim();
     if (!b) return;
-    onChange([...deals, { id: uid(), brand: b, what: what.trim(), due: due || null, status: 'active', notes: '', created: today }]);
+    onChange([...deals, { id: uid(), brand: b, what: what.trim(), due: due || null, status: 'active', notes: '', created: today, createdAt: nowHM() }]);
     setBrand(''); setWhat(''); setDue('');
     setAdding(false);
   };
@@ -535,8 +556,8 @@ function TodayCard({ items, today, onUpdate, onAdd }) {
     setText('');
   };
   const toggle = (item) => {
-    if (item.done) onUpdate(item.id, { done: false, doneOn: null });
-    else onUpdate(item.id, { done: true, doneOn: today });
+    if (item.done) onUpdate(item.id, { done: false, doneOn: null, doneAt: null });
+    else onUpdate(item.id, { done: true, doneOn: today, doneAt: nowHM() });
   };
   // Only shows while something is left to do.
   if (!items.some((i) => !i.done)) return null;
@@ -587,7 +608,7 @@ function HorizonCard({ items, today, onAdd, onRemove }) {
   const add = () => {
     const v = text.trim();
     if (!v) return;
-    onAdd({ id: uid(), text: v, kind: 'task', date: date > today ? date : today, created: today });
+    onAdd({ id: uid(), text: v, kind: 'task', date: date > today ? date : today, created: today, createdAt: nowHM() });
     setText('');
   };
 
@@ -634,6 +655,9 @@ function HorizonCard({ items, today, onAdd, onRemove }) {
 // ---- activity log ----
 // Rebuilt from what's already saved: each day's check-offs (with times), plus the dates
 // tasks, Today items and brand deals were added and tasks were removed.
+// Earliest first; entries saved before times were recorded go last.
+const byTime = (a, b) => ((a.at || '99') < (b.at || '99') ? -1 : (a.at || '99') > (b.at || '99') ? 1 : 0);
+
 function buildActivity(data, today) {
   const c = data.challenge;
   const sections = c.sections || SECTIONS;
@@ -654,35 +678,39 @@ function buildActivity(data, today) {
     });
   });
   (data.horizon || []).forEach((h) => {
-    if (h.done && h.doneOn && h.doneOn <= today) day(h.doneOn).done.push({ key: 'h' + h.id, label: h.text, where: 'Today list' });
+    if (h.done && h.doneOn && h.doneOn <= today) day(h.doneOn).done.push({ key: 'h' + h.id, label: h.text, where: 'Today list', at: h.doneAt, label2: h.doneAt && fmtTime(h.doneAt) });
     if (h.created && h.created <= today) {
-      day(h.created).added.push({ key: 'h' + h.id, text: h.date === h.created ? `Added "${h.text}" for today` : `Planned "${h.text}" for ${pretty(h.date)}` });
+      day(h.created).added.push({ key: 'h' + h.id, at: h.createdAt, text: h.date === h.created ? `Added "${h.text}" for today` : `Planned "${h.text}" for ${pretty(h.date)}` });
     }
   });
   c.tasks.forEach((task) => {
     if (task.added && task.added <= today) {
       const once = task.removed === addDays(task.added, 1);
-      day(task.added).added.push({ key: 'a' + task.id, text: `Added "${task.label}" to ${sectionName(task)}${once ? ' (today only)' : ''}` });
+      day(task.added).added.push({ key: 'a' + task.id, at: task.addedAt, text: `Added "${task.label}" to ${sectionName(task)}${once ? ' (today only)' : ''}` });
     }
     if (task.removed && task.removed <= today && !(task.added && task.removed === addDays(task.added, 1))) {
-      day(task.removed).removed.push({ key: 'r' + task.id, text: `Removed "${task.label}" from ${sectionName(task)}` });
+      day(task.removed).removed.push({ key: 'r' + task.id, at: task.removedAt, text: `Removed "${task.label}" from ${sectionName(task)}` });
     }
   });
   const outreach = outreachOf(data);
+  outreach.cats.forEach((cat) => {
+    if (cat.added && cat.added <= today) day(cat.added).added.push({ key: 'oc' + cat.id, at: cat.addedAt, text: `New Pipeline category: ${cat.label}` });
+  });
   outreach.brands.forEach((b) => {
+    const cat = outreach.cats.find((c) => c.id === b.cat);
+    if (b.added && b.added <= today) day(b.added).added.push({ key: 'oa' + b.id, at: b.addedAt, text: `Added ${b.brand} to Pipeline${cat ? ' (' + cat.label + ')' : ''}` });
     if (b.done && b.doneOn && b.doneOn <= today) {
-      const cat = outreach.cats.find((c) => c.id === b.cat);
-      day(b.doneOn).added.push({ key: 'o' + b.id, text: `Reached out to ${b.brand}${cat ? ' (' + cat.label + ')' : ''}` });
+      day(b.doneOn).done.push({ key: 'o' + b.id, label: `Reached out to ${b.brand}`, where: cat ? cat.label : 'Pipeline', at: b.doneAt, label2: b.doneAt && fmtTime(b.doneAt) });
     }
   });
   (data.deals || []).forEach((deal) => {
-    if (deal.created && deal.created <= today) day(deal.created).added.push({ key: 'd' + deal.id, text: `New brand deal: ${deal.brand}` });
+    if (deal.created && deal.created <= today) day(deal.created).added.push({ key: 'd' + deal.id, at: deal.createdAt, text: `New brand deal: ${deal.brand}` });
   });
 
   return Object.values(days)
     .filter((x) => x.done.length || x.added.length || x.removed.length)
     .sort((a, b) => (a.date < b.date ? 1 : -1))
-    .map((x) => ({ ...x, done: x.done.sort((a, b) => ((a.at || '99') < (b.at || '99') ? -1 : 1)) }));
+    .map((x) => ({ ...x, done: x.done.sort(byTime), added: x.added.sort(byTime), removed: x.removed.sort(byTime) }));
 }
 
 function ActivityCard({ data, today }) {
@@ -715,6 +743,7 @@ function ActivityCard({ data, today }) {
               <li key={x.key} className="act-change">
                 <span className="act-dot hollow" aria-hidden="true" />
                 <span className="act-text">{x.text}</span>
+                {x.at && <span className="act-time">{fmtTime(x.at)}</span>}
               </li>
             ))}
           </ul>
@@ -824,6 +853,11 @@ export default function App() {
   }, [settingsOpen]);
   const loadedRef = useRef(false);
   const checklistRef = useRef(null);
+  // What this device last loaded from or saved to the server, and that save's revision id.
+  // If another device saved since, its changes are merged in instead of being overwritten.
+  const syncedRef = useRef({ data: null, rev: null });
+  const dataRef = useRef(null);
+  dataRef.current = data;
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -880,7 +914,7 @@ export default function App() {
           today_notes: '',
         });
       } else if (row.history && row.history.v2) {
-        next = row.history.v2;
+        next = { ...row.history.v2 };
         if (!next.weeks) next.weeks = {};
         if (!next.attempts) next.attempts = [];
         if (!next.horizon) next.horizon = [];
@@ -898,6 +932,7 @@ export default function App() {
           .update({ history: { v2: next, v1: row.history || {} }, updated_at: new Date().toISOString() })
           .eq('user_id', user.id);
       }
+      syncedRef.current = { data: next, rev: (row && row.history && row.history.rev) || null };
       setData(next);
       loadedRef.current = true;
     } catch (e) {
@@ -907,24 +942,59 @@ export default function App() {
     setIsLoading(false);
   };
 
+  // Coming back to the app (another tab, the phone waking up): pick up anything another
+  // device saved in the meantime, so this copy never saves stale data over it.
+  useEffect(() => {
+    if (!user) return;
+    const refresh = async () => {
+      if (document.visibilityState !== 'visible' || !loadedRef.current) return;
+      try {
+        const { data: row } = await supabase.from('user_progress').select('history').eq('user_id', user.id).single();
+        const server = row && row.history && row.history.v2;
+        const rev = (row && row.history && row.history.rev) || null;
+        if (!server || rev === syncedRef.current.rev) return;
+        const local = dataRef.current;
+        const base = syncedRef.current.data;
+        syncedRef.current = { data: server, rev };
+        setData(local === base ? server : mergeData(server, local, base));
+      } catch (e) {
+        console.error('Failed to refresh:', e);
+      }
+    };
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    return () => { document.removeEventListener('visibilitychange', refresh); window.removeEventListener('focus', refresh); };
+  }, [user]);
+
   // Save to Supabase whenever data changes.
   useEffect(() => {
     if (!user || !data || !loadedRef.current) return;
+    if (data === syncedRef.current.data) return; // nothing new since the last load or save
     setSaveStatus('saving');
     const timer = setTimeout(async () => {
       try {
         const { data: row } = await supabase.from('user_progress').select('history').eq('user_id', user.id).single();
         const keep = row && row.history && row.history.v1 ? { v1: row.history.v1 } : {};
+        const serverRev = (row && row.history && row.history.rev) || null;
+        // Another device saved since this one last synced: keep its changes, apply ours on top.
+        const toWrite = serverRev !== syncedRef.current.rev && row && row.history && row.history.v2
+          ? mergeData(row.history.v2, data, syncedRef.current.data)
+          : data;
+        const rev = uid();
         const { error } = await supabase
           .from('user_progress')
           .update({
-            history: { ...keep, v2: data },
-            current_day: Math.max(1, Math.min(dayOf(data.challenge, todayStr()), data.challenge.length)),
+            history: { ...keep, v2: toWrite, rev },
+            current_day: Math.max(1, Math.min(dayOf(toWrite.challenge, todayStr()), toWrite.challenge.length)),
             updated_at: new Date().toISOString(),
           })
           .eq('user_id', user.id);
         setSaveStatus(error ? 'error' : 'saved');
-        writeBackup(user.id, data);
+        if (!error) {
+          syncedRef.current = { data: toWrite, rev };
+          if (toWrite !== data) setData((cur) => (cur === data ? toWrite : cur));
+        }
+        writeBackup(user.id, toWrite);
       } catch (e) {
         console.error('Failed to save:', e);
         setSaveStatus('error');
@@ -1089,7 +1159,7 @@ export default function App() {
   }));
   const addTodayItem = (text) => setData((prev) => ({
     ...prev,
-    horizon: [...(prev.horizon || []), { id: uid(), text, kind: 'task', date: t, created: t }],
+    horizon: [...(prev.horizon || []), { id: uid(), text, kind: 'task', date: t, created: t, createdAt: nowHM() }],
   }));
 
   return (
@@ -1390,13 +1460,13 @@ function TaskEditor({ tasks, sections, shown, tabId, today, trash, onChange }) {
   // Drops a task added today; otherwise ends it as of today so past days keep it.
   const retire = (list, task) => (task.added === today
     ? list.filter((x) => x.id !== task.id)
-    : list.map((x) => (x.id === task.id ? { ...x, removed: today } : x)));
+    : list.map((x) => (x.id === task.id ? { ...x, removed: today, removedAt: nowHM() } : x)));
 
   const add = (sectionId) => {
     const label = (drafts[sectionId] || '').trim();
     if (!label) return;
     const once = repeat[sectionId] === 'once';
-    onChange({ tasks: [...tasks, { id: uid(), section: sectionId, label, added: today, ...(once ? { removed: tomorrow } : {}) }] });
+    onChange({ tasks: [...tasks, { id: uid(), section: sectionId, label, added: today, addedAt: nowHM(), ...(once ? { removed: tomorrow } : {}) }] });
     setDrafts((d) => ({ ...d, [sectionId]: '' }));
   };
   const remove = (task) => onChange({ tasks: retire(tasks, task) });
