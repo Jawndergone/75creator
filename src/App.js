@@ -237,9 +237,23 @@ const MailIcon = () => (
     <path d="M2.75 4.5L8 8.5l5.25-4" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
   </svg>
 );
+const FormIcon = () => (
+  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="M4 1.75h5.25L12.5 5v8.5a.75.75 0 0 1-.75.75h-7.5a.75.75 0 0 1-.75-.75V2.5a.75.75 0 0 1 .75-.75z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    <path d="M9 2v3.25h3.25M5.75 8.25h4.5M5.75 11h4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+const PhoneIcon = () => (
+  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <rect x="4" y="1.75" width="8" height="12.5" rx="1.75" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M7 11.75h2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+);
 const OUTREACH_CHANNELS = [
   { id: 'dm', label: 'TikTok DM', Icon: TikTokIcon },
   { id: 'email', label: 'Email', Icon: MailIcon },
+  { id: 'form', label: 'Form', Icon: FormIcon },
+  { id: 'whatsapp', label: 'WhatsApp', Icon: PhoneIcon },
 ];
 
 // Brands saved by the earlier stage-based pipeline move into an "Other" category.
@@ -337,6 +351,11 @@ function OutreachList({ outreach, today, editing, onDoneEditing, onChange }) {
     setNewCat('');
   };
   const renameCat = (id, label) => set({ cats: cats.map((c) => (c.id === id ? { ...c, label } : c)) });
+  const moveCat = (i, dir) => {
+    const next = [...cats];
+    [next[i], next[i + dir]] = [next[i + dir], next[i]];
+    set({ cats: next });
+  };
   const deleteCat = (c) => {
     if (armed !== c.id) return setArmed(c.id);
     set({ cats: cats.filter((x) => x.id !== c.id), brands: brands.filter((x) => x.cat !== c.id) });
@@ -371,11 +390,17 @@ function OutreachList({ outreach, today, editing, onDoneEditing, onChange }) {
 
       {cats.length > 0 && (
         <section className="card today checklist boxed pipeline-list" aria-label="Brand outreach">
-          {cats.map((c) => {
+          {cats.map((c, ci) => {
             const list = brands.filter((b) => b.cat === c.id);
             return (
               <div className="section" key={c.id}>
                 <div className="section-head">
+                  {editing && (
+                    <div className="order">
+                      <button type="button" className="icon-btn small" aria-label={`Move ${c.label} up`} disabled={ci === 0} onClick={() => moveCat(ci, -1)}>↑</button>
+                      <button type="button" className="icon-btn small" aria-label={`Move ${c.label} down`} disabled={ci === cats.length - 1} onClick={() => moveCat(ci, 1)}>↓</button>
+                    </div>
+                  )}
                   {editing ? (
                     <input className="text section-input pipe-cat-input" id={'cat-' + c.id} maxLength={40} aria-label="Category name" value={c.label}
                       onChange={(e) => renameCat(c.id, e.target.value)} onBlur={(e) => { if (!e.target.value.trim()) renameCat(c.id, 'Untitled'); }} />
