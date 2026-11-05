@@ -224,6 +224,24 @@ function writeBackup(userId, data) {
 // Separate from the daily tasks; checking a brand marks it as reached out.
 const PIPELINE_TAB = 'pipeline';
 
+// After checking a brand off, tap its TikTok DM or Email circle to track the reply:
+// 1 tap pending (orange), 2 replied (blue), 3 approved (green), 4 denied (gray), 5 clears it.
+const CHANNEL_STEPS = ['pending', 'replied', 'approved', 'denied'];
+const STEP_TEXT = { pending: 'sent, waiting on a reply', replied: 'replied', approved: 'approved', denied: 'denied' };
+// Your TikTok logo, reduced to its white middle layer so it sits cleanly in the circles.
+const TIKTOK_SRC = 'data:image/png;base64,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';
+const TikTokIcon = () => <img src={TIKTOK_SRC} alt="" aria-hidden="true" />;
+const MailIcon = () => (
+  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <rect x="2" y="3.5" width="12" height="9" rx="1.75" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M2.75 4.5L8 8.5l5.25-4" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+  </svg>
+);
+const OUTREACH_CHANNELS = [
+  { id: 'dm', label: 'TikTok DM', Icon: TikTokIcon },
+  { id: 'email', label: 'Email', Icon: MailIcon },
+];
+
 // Brands saved by the earlier stage-based pipeline move into an "Other" category.
 function outreachOf(data) {
   if (data.outreach) return data.outreach;
@@ -294,6 +312,16 @@ function OutreachList({ outreach, today, editing, onDoneEditing, onChange }) {
   const showPitchEditor = editing || !pitch;
 
   const toggle = (b) => set({ brands: brands.map((x) => (x.id !== b.id ? x : x.done ? { ...x, done: false, doneOn: null, doneAt: null } : { ...x, done: true, doneOn: today, doneAt: nowHM() })) });
+  // Steps a brand's DM or email circle to the next status, and logs the change with a time.
+  const stepChannel = (b, ch) => {
+    const cur = (b.channels || {})[ch];
+    const next = cur ? CHANNEL_STEPS[CHANNEL_STEPS.indexOf(cur) + 1] || null : 'pending';
+    set({ brands: brands.map((x) => (x.id !== b.id ? x : {
+      ...x,
+      channels: { ...(x.channels || {}), [ch]: next },
+      log: [...(x.log || []), { ch, status: next, on: today, at: nowHM() }],
+    })) });
+  };
   const addBrand = (catId) => {
     const brand = (drafts[catId] || '').trim();
     if (!brand) return;
@@ -374,7 +402,22 @@ function OutreachList({ outreach, today, editing, onDoneEditing, onChange }) {
                             <button className="icon-btn pipe-x" type="button" aria-label={`Remove ${b.brand}`} onClick={() => removeBrand(b.id)}>×</button>
                           </>
                         ) : (
-                          <CheckRow label={b.brand} checked={!!b.done} onToggle={() => toggle(b)} />
+                          <>
+                            <CheckRow label={b.brand} checked={!!b.done} onToggle={() => toggle(b)} />
+                            {b.done && (
+                              <span className="chan-group">
+                                {OUTREACH_CHANNELS.map(({ id, label, Icon }) => {
+                                  const st = (b.channels || {})[id];
+                                  return (
+                                    <button key={id} type="button" className={'chan' + (st ? ' s-' + st : '')} onClick={() => stepChannel(b, id)}
+                                      aria-label={`${label} for ${b.brand}: ${st ? STEP_TEXT[st] : 'not used'}. Tap to change.`}>
+                                      <Icon />
+                                    </button>
+                                  );
+                                })}
+                              </span>
+                            )}
+                          </>
                         )}
                       </div>
                     </li>
@@ -702,6 +745,11 @@ function buildActivity(data, today) {
     if (b.done && b.doneOn && b.doneOn <= today) {
       day(b.doneOn).done.push({ key: 'o' + b.id, label: `Reached out to ${b.brand}`, where: cat ? cat.label : 'Pipeline', at: b.doneAt, label2: b.doneAt && fmtTime(b.doneAt) });
     }
+    (b.log || []).forEach((e, i) => {
+      if (!e.status || !e.on || e.on > today) return;
+      const ch = OUTREACH_CHANNELS.find((x) => x.id === e.ch);
+      day(e.on).done.push({ key: 'ol' + b.id + i, label: `${b.brand} · ${ch ? ch.label : e.ch} ${STEP_TEXT[e.status]}`, where: cat ? cat.label : 'Pipeline', at: e.at, label2: e.at && fmtTime(e.at) });
+    });
   });
   (data.deals || []).forEach((deal) => {
     if (deal.created && deal.created <= today) day(deal.created).added.push({ key: 'd' + deal.id, at: deal.createdAt, text: `New brand deal: ${deal.brand}` });
@@ -2101,6 +2149,15 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .copy-btn svg { width: 15px; height: 15px; display: block; }
 .copy-btn.copied { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .copy-btn.copied svg path { stroke: currentColor; }
+.chan-group { flex: none; display: flex; gap: 8px; margin-right: 20px; }
+.chan { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; border-radius: 50%; border: 2px solid var(--line); background: none; color: var(--ink); opacity: .6; transition: background .15s, border-color .15s; touch-action: manipulation; }
+.chan svg { width: 15px; height: 15px; display: block; }
+.chan img { width: 17px; height: 17px; display: block; }
+.chan[class*=" s-"] { opacity: 1; color: #FFFFFF; }
+.chan.s-pending { background: #FF9F0A; border-color: #FF9F0A; }
+.chan.s-replied { background: #0A84FF; border-color: #0A84FF; }
+.chan.s-approved { background: #30D158; border-color: #30D158; }
+.chan.s-denied { background: #636366; border-color: #636366; }
 .pipe-new { display: flex; gap: 8px; flex-wrap: wrap; }
 .pipe-new .text { flex: 1 1 200px; width: auto; }
 .pipe-hint { margin-top: -6px; }
