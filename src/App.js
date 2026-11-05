@@ -237,24 +237,23 @@ const MailIcon = () => (
     <path d="M2.75 4.5L8 8.5l5.25-4" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
   </svg>
 );
-const FormIcon = () => (
-  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-    <path d="M4 1.75h5.25L12.5 5v8.5a.75.75 0 0 1-.75.75h-7.5a.75.75 0 0 1-.75-.75V2.5a.75.75 0 0 1 .75-.75z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-    <path d="M9 2v3.25h3.25M5.75 8.25h4.5M5.75 11h4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
 const PhoneIcon = () => (
   <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
     <rect x="4" y="1.75" width="8" height="12.5" rx="1.75" stroke="currentColor" strokeWidth="1.5" />
     <path d="M7 11.75h2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
   </svg>
 );
+// Sample and Form have no icon; they show as wider text pills.
 const OUTREACH_CHANNELS = [
+  { id: 'sample', label: 'Sample' },
+  { id: 'form', label: 'Form' },
   { id: 'dm', label: 'TikTok DM', Icon: TikTokIcon },
   { id: 'email', label: 'Email', Icon: MailIcon },
-  { id: 'form', label: 'Form', Icon: FormIcon },
   { id: 'whatsapp', label: 'WhatsApp', Icon: PhoneIcon },
 ];
+// A "Pending deals" category tracks contracts instead of outreach channels.
+const CONTRACT_CHANNELS = [{ id: 'contract', label: 'Contract' }];
+const channelsFor = (cat) => (cat && cat.label.trim().toLowerCase() === 'pending deals' ? CONTRACT_CHANNELS : OUTREACH_CHANNELS);
 
 // Brands saved by the earlier stage-based pipeline move into an "Other" category.
 function outreachOf(data) {
@@ -431,12 +430,12 @@ function OutreachList({ outreach, today, editing, onDoneEditing, onChange }) {
                             <CheckRow label={b.brand} checked={!!b.done} onToggle={() => toggle(b)} />
                             {b.done && (
                               <span className="chan-group">
-                                {OUTREACH_CHANNELS.map(({ id, label, Icon }) => {
+                                {channelsFor(c).map(({ id, label, Icon }) => {
                                   const st = (b.channels || {})[id];
                                   return (
-                                    <button key={id} type="button" className={'chan' + (st ? ' s-' + st : '')} onClick={() => stepChannel(b, id)}
+                                    <button key={id} type="button" className={'chan' + (Icon ? '' : ' chan-text') + (st ? ' s-' + st : '')} onClick={() => stepChannel(b, id)}
                                       aria-label={`${label} for ${b.brand}: ${st ? STEP_TEXT[st] : 'not used'}. Tap to change.`}>
-                                      <Icon />
+                                      {Icon ? <Icon /> : label}
                                     </button>
                                   );
                                 })}
@@ -772,7 +771,7 @@ function buildActivity(data, today) {
     }
     (b.log || []).forEach((e, i) => {
       if (!e.status || !e.on || e.on > today) return;
-      const ch = OUTREACH_CHANNELS.find((x) => x.id === e.ch);
+      const ch = [...OUTREACH_CHANNELS, ...CONTRACT_CHANNELS].find((x) => x.id === e.ch);
       day(e.on).done.push({ key: 'ol' + b.id + i, label: `${b.brand} · ${ch ? ch.label : e.ch} ${STEP_TEXT[e.status]}`, where: cat ? cat.label : 'Pipeline', at: e.at, label2: e.at && fmtTime(e.at) });
     });
   });
@@ -2174,9 +2173,12 @@ header.top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: ce
 .copy-btn svg { width: 15px; height: 15px; display: block; }
 .copy-btn.copied { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .copy-btn.copied svg path { stroke: currentColor; }
-.chan-group { flex: none; display: flex; gap: 8px; margin-right: 20px; }
+.chan-group { flex: none; display: flex; gap: 6px; margin-right: 16px; }
+.pipeline-list .task { min-width: 0; }
+.pipeline-list .task .label { min-width: 0; overflow-wrap: anywhere; }
 .chan { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; border-radius: 50%; border: 2px solid var(--line); background: none; color: var(--ink); opacity: .6; transition: background .15s, border-color .15s; touch-action: manipulation; }
 .chan svg { width: 15px; height: 15px; display: block; }
+.chan.chan-text { width: auto; padding: 0 9px; border-radius: 15px; font-size: 13px; font-weight: 700; }
 .chan img { width: 17px; height: 17px; display: block; }
 .chan[class*=" s-"] { opacity: 1; color: #FFFFFF; }
 .chan.s-pending { background: #FF9F0A; border-color: #FF9F0A; }
