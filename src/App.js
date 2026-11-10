@@ -1224,6 +1224,18 @@ export default function App() {
     setSelected(t);
   };
 
+  // Checks off every task on each unfinished past day so the challenge carries on.
+  const completeMissed = () => setData((prev) => {
+    const logs = { ...prev.logs };
+    pastDays(prev, t).forEach((d) => {
+      if (isComplete(prev, d)) return;
+      const cur = logs[d] || { done: [], note: '' };
+      const ids = activeTasks(prev.challenge, d).map((x) => x.id);
+      logs[d] = { ...cur, done: [...new Set([...cur.done, ...ids])] };
+    });
+    return { ...prev, logs };
+  });
+
 
   const updateHorizon = (id, changes) => setData((prev) => ({
     ...prev,
@@ -1282,6 +1294,7 @@ export default function App() {
             <div className="row">
               <button className="btn primary" type="button" onClick={restart}>Restart at Day 1</button>
               <button className="btn" type="button" onClick={() => selectDay(fail.date)}>I did it, let me log it</button>
+              <button className="btn" type="button" onClick={completeMissed}>Complete &amp; push to next day</button>
             </div>
           </div>
         )}
